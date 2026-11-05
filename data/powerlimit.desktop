@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Power Limiter
+Comment=CPU/GPU power limits and per-game auto-tuning
+Exec=powerlimit gui
+Icon=powerlimit
+Categories=System;Settings;HardwareSettings;
+Keywords=power;cpu;gpu;thermal;tdp;
+Terminal=false
