@@ -9,7 +9,9 @@ all: build
 build:
 	cargo build --release
 
-install: build
+# no build dependency: sudo has no cargo in PATH, so run `make` first as your user
+install:
+	@test -x target/release/powerlimit || { echo "run 'make' first (as your normal user)"; exit 1; }
 	install -Dm755 target/release/powerlimit $(DESTDIR)$(BINDIR)/powerlimit
 	install -Dm644 data/powerlimit.desktop $(DESTDIR)$(DATADIR)/applications/powerlimit.desktop
 	install -Dm644 data/powerlimit.svg $(DESTDIR)$(DATADIR)/icons/hicolor/scalable/apps/powerlimit.svg
