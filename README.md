@@ -11,7 +11,7 @@ and auto-tune the limits per game so the laptop stops overheating.
   It waits for temperatures to level off before measuring and discards samples while the game is idle (menus, pause).
   There is no FPS reading, so "best" means the highest sustained clocks without throttling.
 - **Saved profiles** appear in the window with Apply / delete buttons; tick *Auto-apply* (or run `sudo powerlimit watch`) to switch profiles automatically when a game starts.
-- Limits live in RAPL (`/sys/class/powercap`) and `nvidia-smi -pl`; they reset on reboot.
+- Limits live in RAPL (`/sys/class/powercap`) and `nvidia-smi -pl`. They reset on reboot unless you tick *Keep CPU limits after reboot* (or use `set ... --persist`), which installs a udev rule `/etc/udev/rules.d/99-powerlimit.rules` that re-applies the CPU limits when the RAPL device appears at boot - no service. The GPU limit is not kept.
   Some laptops lock the GPU power limit, in which case only the CPU limit is applied.
 
 Other Intel laptops with RAPL may work, but this is only tested on the XPS 15 9510. Use at your own risk.

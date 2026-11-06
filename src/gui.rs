@@ -177,13 +177,17 @@ fn build(app: &gtk::Application) {
     row.append(&apply);
     row.append(&reset);
     root.append(&row);
+    let keep = gtk::CheckButton::with_label("Keep CPU limits after reboot (GPU limit isn't kept)");
+    keep.set_active(std::path::Path::new("/etc/udev/rules.d/99-powerlimit.rules").exists());
+    root.append(&keep);
     let status = gtk::Label::new(None);
     status.set_xalign(0.0);
     root.append(&status);
     {
-        let (tx, s1, s2, s3) = (tx.clone(), s1.clone(), s2.clone(), s3.clone());
+        let (tx, s1, s2, s3, keep) = (tx.clone(), s1.clone(), s2.clone(), s3.clone(), keep.clone());
         apply.connect_clicked(move |_| {
-            let a = ["set".to_string(), s1.value().to_string(), s2.value().max(s1.value()).to_string(), s3.value().to_string()];
+            let a = ["set".to_string(), s1.value().to_string(), s2.value().max(s1.value()).to_string(), s3.value().to_string(),
+                if keep.is_active() { "--persist" } else { "--no-persist" }.to_string()];
             privileged(a.to_vec(), tx.clone());
         });
     }

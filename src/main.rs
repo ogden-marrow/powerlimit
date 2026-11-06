@@ -224,6 +224,21 @@ fn save_profile(name: &str, l: Limits) -> Result<(), String> {
     fs::write(PROFILES, text.join("\n") + "\n").map_err(|e| e.to_string())
 }
 
+const UDEV_RULE: &str = "/etc/udev/rules.d/99-powerlimit.rules";
+
+/// Re-apply the CPU limits whenever the RAPL device appears at boot (no service needed; the GPU limit is not covered).
+fn persist(l: Option<Limits>) -> Result<(), String> {
+    match l {
+        Some(l) => fs::write(UDEV_RULE, format!(
+            "# written by powerlimit\nSUBSYSTEM==\"powercap\", KERNEL==\"intel-rapl:0\", ATTR{{constraint_0_power_limit_uw}}=\"{}\", ATTR{{constraint_1_power_limit_uw}}=\"{}\"\n",
+            (l.pl1 * 1e6) as u64, (l.pl2 * 1e6) as u64)).map_err(|e| e.to_string()),
+        None => match fs::remove_file(UDEV_RULE) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+            _ => Ok(()),
+        },
+    }
+}
+
 fn forget(name: &str) -> Result<(), String> {
     let mut m = load_profiles();
     m.remove(name).ok_or(format!("no profile '{name}'"))?;
@@ -538,7 +553,7 @@ fn usage() {
 
   status                         current limits, temps, saved profiles
   procs                          list running game candidates (pid, name)
-  set <cpuPL1> <cpuPL2> <gpuW>   e.g. set 35 45 30         (root)
+  set <cpuPL1> <cpuPL2> <gpuW> [--persist|--no-persist]\n                                 e.g. set 35 45 30 --persist  (root; --persist keeps the CPU limits across reboots)
   reset                          Dell defaults             (root)
   tune [--pid PID | --game NAME] [--minutes 30] [--cpu-max 85] [--gpu-max 80]   (root)
                                  run while a game is open; finds best limits and saves them
@@ -559,13 +574,22 @@ fn main() {
     let res = match cmd {
         "status" => { status(); Ok(()) }
         "procs" => { for (p, n) in candidates() { println!("{p}\t{n}"); } Ok(()) }
-        "reset" => apply(DEFAULT),
-        "set" => match a[1..].iter().map(|x| x.parse::<f64>()).collect::<Result<Vec<_>, _>>() {
-            Ok(n) if n.len() == 3 && n[0] >= 10.0 && n[1] >= n[0] && n[1] <= 109.0 && (5.0..=45.0).contains(&n[2]) =>
-                apply(Limits { pl1: n[0], pl2: n[1], gpu: n[2] }),
-            Ok(_) => Err("out of range: need 10 <= PL1 <= PL2 <= 109 and 5 <= GPU <= 45".into()),
-            _ => Err("usage: set <cpuPL1> <cpuPL2> <gpuW>".into()),
-        },
+        "reset" => apply(DEFAULT).and_then(|_| persist(None)),
+        "set" => {
+            let flag = a.iter().find(|x| x.starts_with("--")).cloned();
+            match a[1..].iter().filter(|x| !x.starts_with("--")).map(|x| x.parse::<f64>()).collect::<Result<Vec<_>, _>>() {
+                Ok(n) if n.len() == 3 && n[0] >= 10.0 && n[1] >= n[0] && n[1] <= 109.0 && (5.0..=45.0).contains(&n[2]) => {
+                    let l = Limits { pl1: n[0], pl2: n[1], gpu: n[2] };
+                    apply(l).and_then(|_| match flag.as_deref() {
+                        Some("--persist") => persist(Some(l)),
+                        Some("--no-persist") => persist(None),
+                        _ => Ok(()),
+                    })
+                }
+                Ok(_) => Err("out of range: need 10 <= PL1 <= PL2 <= 109 and 5 <= GPU <= 45".into()),
+                _ => Err("usage: set <cpuPL1> <cpuPL2> <gpuW> [--persist|--no-persist]".into()),
+            }
+        }
         "tune" => {
             let mut o = Opts { pid: None, game: None, minutes: 30, cpu_max: 85.0, gpu_max: 80.0, stdin_stop: false };
             let mut it = a[1..].iter();
