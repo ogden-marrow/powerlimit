@@ -5,10 +5,10 @@ and auto-tune the limits per game so the laptop stops overheating.
 
 - **Presets & sliders** for CPU sustained (PL1), CPU burst (PL2) and GPU watts, with a live temperature/power graph.
 - **Auto-tune**: start a game, press *Start tuning*. For ~30 min it climbs a ladder of power levels,
-  tracks peak CPU/GPU temperature and GPU thermal-throttle flags, and saves the highest level that stays under
-  your temperature caps (default 85 °C CPU / 80 °C GPU). There is no FPS reading, so "best" means
-  *most power that stays cool*, not measured frame rate.
-- **`powerlimit watch`** re-applies a game's saved profile whenever that game runs.
+  measures average CPU and GPU clock speed (MHz) plus CPU/GPU thermal throttling at each level, and saves the level with the highest combined clocks that never throttles and stays under
+  your temperature caps (default 85 °C CPU / 80 °C GPU). There is no FPS reading, so "best" means the highest sustained clocks without throttling, not
+  measured frame rate.
+- **Saved profiles** appear in the window with Apply / delete buttons; tick *Auto-apply* (or run `sudo powerlimit watch`) to switch profiles automatically when a game starts.
 - Limits live in RAPL (`/sys/class/powercap`) and `nvidia-smi -pl`; they reset on reboot.
   Some laptops lock the GPU power limit, in which case only the CPU limit is applied.
 

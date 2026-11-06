@@ -11,12 +11,14 @@ use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use crate::{current, energy_uj, load_profiles, sample, LADDER};
+use crate::{candidates, current, energy_uj, load_profiles, sample};
 
 enum Msg {
     Log(String),
     TuneDone,
     Applied(Result<(), String>),
+    Watch(String),
+    WatchEnded,
 }
 
 const PRESETS: [(&str, f64, f64, f64); 3] = [
@@ -197,13 +199,33 @@ fn build(app: &gtk::Application) {
     hint.set_xalign(0.0);
     hint.add_css_class("dim-label");
     root.append(&hint);
-    let game = gtk::Entry::new();
-    game.set_placeholder_text(Some("auto-detect"));
+    let game = gtk::ComboBoxText::new();
+    let game_row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    let reload = gtk::Button::from_icon_name("view-refresh-symbolic");
+    reload.set_tooltip_text(Some("Rescan running games"));
+    game_row.append(&game);
+    game_row.append(&reload);
+    let fill = {
+        let game = game.clone();
+        move || {
+            game.remove_all();
+            game.append(Some("auto"), "Auto-detect");
+            for (pid, name) in candidates() {
+                game.append(Some(&pid.to_string()), &format!("{name} · pid {pid}"));
+            }
+            game.set_active_id(Some("auto"));
+        }
+    };
+    fill();
+    {
+        let fill = fill.clone();
+        reload.connect_clicked(move |_| fill());
+    }
     let minutes = spin(6.0, 240.0, 30.0);
     let cmax = spin(60.0, 100.0, 85.0);
     let gmax = spin(60.0, 95.0, 80.0);
     let opts = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    opts.append(&labeled("Game process", &game));
+    opts.append(&labeled("Running game", &game_row));
     opts.append(&labeled("Minutes", &minutes));
     opts.append(&labeled("CPU max °C", &cmax));
     opts.append(&labeled("GPU max °C", &gmax));
@@ -228,11 +250,43 @@ fn build(app: &gtk::Application) {
     log_scroll.set_child(Some(&log));
     root.append(&log_scroll);
 
-    root.append(&heading("Saved profiles"));
-    let profiles = gtk::Label::new(None);
-    profiles.set_xalign(0.0);
-    profiles.set_selectable(true);
+    root.append(&heading("Saved game profiles"));
+    let auto = gtk::CheckButton::with_label("Auto-apply a game's profile when it starts (resets to defaults when it closes)");
+    root.append(&auto);
+    let auto_status = gtk::Label::new(None);
+    auto_status.set_xalign(0.0);
+    auto_status.add_css_class("dim-label");
+    root.append(&auto_status);
+    let profiles = gtk::Box::new(gtk::Orientation::Vertical, 4);
     root.append(&profiles);
+    let watcher: Rc<RefCell<Option<ChildStdin>>> = Rc::new(RefCell::new(None));
+    {
+        let (tx, watcher) = (tx.clone(), watcher.clone());
+        auto.connect_toggled(move |c| {
+            if c.is_active() {
+                let spawned = Command::new("pkexec").arg(exe()).args(["watch", "--stdin-stop"])
+                    .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn();
+                match spawned {
+                    Ok(mut child) => {
+                        *watcher.borrow_mut() = child.stdin.take();
+                        let out = child.stdout.take().unwrap();
+                        let t = tx.clone();
+                        std::thread::spawn(move || {
+                            for l in BufReader::new(out).lines().map_while(Result::ok) {
+                                let _ = t.send(Msg::Watch(l));
+                            }
+                            let _ = child.wait();
+                            let _ = t.send(Msg::WatchEnded);
+                        });
+                    }
+                    Err(e) => { let _ = tx.send(Msg::Watch(format!("could not start pkexec: {e}"))); }
+                }
+            } else if let Some(mut s) = watcher.borrow_mut().take() {
+                let _ = s.write_all(b"stop\n");
+                let _ = s.flush();
+            }
+        });
+    }
 
     {
         let (tx, stdin, start2, stop2) = (tx.clone(), stdin.clone(), start.clone(), stop.clone());
@@ -241,8 +295,8 @@ fn build(app: &gtk::Application) {
             let mut cmd = Command::new("pkexec");
             cmd.arg(exe()).args(["tune", "--stdin-stop", "--minutes", &minutes.value().to_string(),
                 "--cpu-max", &cmax.value().to_string(), "--gpu-max", &gmax.value().to_string()]);
-            if !game.text().is_empty() {
-                cmd.args(["--game", game.text().as_str()]);
+            if let Some(pid) = game.active_id().filter(|id| id.as_str() != "auto") {
+                cmd.args(["--pid", pid.as_str()]);
             }
             cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
             match cmd.spawn() {
@@ -286,14 +340,20 @@ fn build(app: &gtk::Application) {
         let f = stop_tune.clone();
         stop.connect_clicked(move |_| f());
     }
+    let watcher_close = watcher.clone();
     win.connect_close_request(move |_| {
         stop_tune();
+        if let Some(mut s) = watcher_close.borrow_mut().take() {
+            let _ = s.write_all(b"stop\n");
+            let _ = s.flush();
+        }
         glib::Propagation::Proceed
     });
 
     // --- periodic refresh: sensors every 2 s, messages from workers every 300 ms
     let refresh = {
-        let (stats, graph, hist, profiles) = (stats.clone(), graph.clone(), hist.clone(), profiles.clone());
+        let (stats, graph, hist, profiles, tx) = (stats.clone(), graph.clone(), hist.clone(), profiles.clone(), tx.clone());
+        let mut last_key = String::new();
         let mut last_e = energy_uj().map(|e| (e, std::time::Instant::now()));
         move || {
             let s = sample();
@@ -318,9 +378,41 @@ fn build(app: &gtk::Application) {
                 l.pl1, l.pl2, l.gpu));
             let mut p: Vec<_> = load_profiles().into_iter().collect();
             p.sort_by(|a, b| a.0.cmp(&b.0));
-            profiles.set_text(&if p.is_empty() { "none yet".to_string() } else {
-                p.iter().map(|(k, v)| format!("{k}: CPU {}/{} W, GPU {} W", v.pl1, v.pl2, v.gpu)).collect::<Vec<_>>().join("\n")
-            });
+            let key = format!("{p:?}|{}/{}/{}", l.pl1, l.pl2, l.gpu);
+            if key != last_key {
+                last_key = key;
+                while let Some(c) = profiles.first_child() {
+                    profiles.remove(&c);
+                }
+                if p.is_empty() {
+                    let none = gtk::Label::new(Some("none yet - run an auto-tune while a game is open"));
+                    none.set_xalign(0.0);
+                    none.add_css_class("dim-label");
+                    profiles.append(&none);
+                }
+                for (name, v) in &p {
+                    let active = (l.pl1 - v.pl1).abs() < 0.5 && (l.pl2 - v.pl2).abs() < 0.5 && (l.gpu - v.gpu).abs() < 0.5;
+                    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+                    let lbl = gtk::Label::new(None);
+                    lbl.set_markup(&format!("<b>{}</b>{}\n<small>CPU {}/{} W · GPU {} W</small>",
+                        glib::markup_escape_text(name), if active { "  <span color='#6bd47a'>● active</span>" } else { "" }, v.pl1, v.pl2, v.gpu));
+                    lbl.set_xalign(0.0);
+                    lbl.set_hexpand(true);
+                    row.append(&lbl);
+                    let apply = gtk::Button::with_label("Apply");
+                    apply.set_sensitive(!active);
+                    let a = vec!["set".into(), v.pl1.to_string(), v.pl2.to_string(), v.gpu.to_string()];
+                    let t = tx.clone();
+                    apply.connect_clicked(move |_| privileged(a.clone(), t.clone()));
+                    row.append(&apply);
+                    let del = gtk::Button::from_icon_name("user-trash-symbolic");
+                    del.set_tooltip_text(Some("Forget this profile"));
+                    let (name, t) = (name.clone(), tx.clone());
+                    del.connect_clicked(move |_| privileged(vec!["forget".into(), name.clone()], t.clone()));
+                    row.append(&del);
+                    profiles.append(&row);
+                }
+            }
             graph.queue_draw();
             glib::ControlFlow::Continue
         }
@@ -331,11 +423,12 @@ fn build(app: &gtk::Application) {
 
     {
         let (log, bar, status, start, stop, stdin) = (log.clone(), bar.clone(), status.clone(), start.clone(), stop.clone(), stdin.clone());
+        let (auto, auto_status, watcher) = (auto.clone(), auto_status.clone(), watcher.clone());
         glib::timeout_add_local(Duration::from_millis(300), move || {
             while let Ok(m) = rx.try_recv() {
                 match m {
                     Msg::Log(l) => {
-                        if let Some(rest) = l.strip_prefix("Level ") {
+                        if let Some(rest) = l.strip_prefix("Trial ") {
                             if let Some((a, b)) = rest.split(':').next().and_then(|x| x.split_once('/')) {
                                 if let (Ok(a), Ok(b)) = (a.parse::<f64>(), b.parse::<f64>()) {
                                     bar.set_fraction((a - 1.0) / b.max(1.0));
@@ -353,6 +446,12 @@ fn build(app: &gtk::Application) {
                         stop.set_sensitive(false);
                         bar.set_fraction(0.0);
                     }
+                    Msg::Watch(l) => auto_status.set_text(&l),
+                    Msg::WatchEnded => {
+                        auto_status.set_text("");
+                        if auto.is_active() { auto.set_active(false); }
+                        *watcher.borrow_mut() = None;
+                    }
                     Msg::Applied(Ok(())) => status.set_text("Applied."),
                     Msg::Applied(Err(e)) => status.set_text(&format!("Failed: {e}")),
                 }
@@ -360,6 +459,5 @@ fn build(app: &gtk::Application) {
             glib::ControlFlow::Continue
         });
     }
-    let _ = LADDER.len();
     win.present();
 }
