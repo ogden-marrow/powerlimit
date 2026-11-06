@@ -256,41 +256,97 @@ struct Opts {
 
 const K_MIN: u32 = 15;
 const K_MAX: u32 = 50;
-const MAX_TRIALS: u64 = 8;
+const MAX_TRIALS: u64 = 10;
+const SPLIT_STEP: i32 = 3;
 
-/// One knob, 1 W steps: k is CPU sustained watts; burst is +10 W and the GPU follows on a linear 15..45 W scale.
-fn limits_for(k: u32) -> Limits {
-    let pl1 = k as f64;
-    Limits { pl1, pl2: (pl1 + 10.0).min(109.0), gpu: (15.0 + (pl1 - 15.0) * 30.0 / 35.0).round() }
+fn gpu_base(k: u32) -> f64 {
+    (15.0 + (k as f64 - 15.0) * 30.0 / 35.0).round()
+}
+
+/// k = CPU sustained watts at an even split (GPU follows on a linear 15..45 W scale, burst is +10 W);
+/// s shifts watts from CPU to GPU (negative: GPU to CPU), keeping the shared total roughly constant.
+fn limits_for(k: u32, s: i32) -> Limits {
+    let pl1 = (k as f64 - s as f64).max(10.0);
+    Limits { pl1, pl2: (pl1 + 10.0).min(109.0), gpu: (gpu_base(k) + s as f64).clamp(10.0, 45.0) }
 }
 
 struct Trial {
     lim: Limits,
     cmhz: f64,
     gmhz: f64,
+    util: f64, // mean GPU utilisation %, tells us which side is the bottleneck
     ok: bool,
 }
 
-/// Apply one setting, let it heat-soak, then measure. None = game closed or user stopped.
-fn run_trial(n: u64, k: u32, pid: u32, slice: u64, o: &Opts) -> Result<Option<Trial>, String> {
-    let lim = limits_for(k);
+enum Run {
+    Done(Trial),
+    Idle, // the game wasn't doing any work, so the numbers would say nothing
+    Stopped,
+}
+
+/// CPU seconds a process has used so far (utime + stime).
+fn proc_cpu_secs(pid: u32) -> Option<f64> {
+    let st = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let f: Vec<&str> = st[st.rfind(')')? + 2..].split(' ').collect(); // fields after "(comm) "
+    Some((f.get(11)?.parse::<f64>().ok()? + f.get(12)?.parse::<f64>().ok()?) / 100.0)
+}
+
+/// Clock weights by bottleneck: a GPU-bound game cares about GPU MHz, a CPU-bound one about CPU MHz.
+fn weights(util: f64) -> (f64, f64) {
+    let wg = if util >= 90.0 { 0.65 } else if util >= 60.0 { 0.5 } else { 0.35 };
+    (1.0 - wg, wg)
+}
+
+/// Weighted clock score of every unthrottled trial, each side normalised to the best seen.
+fn scored<'a>(trials: &'a [Trial], util: f64) -> Vec<(&'a Trial, f64)> {
+    let ok: Vec<&Trial> = trials.iter().filter(|t| t.ok).collect();
+    let (max_c, max_g) = ok.iter().fold((1.0f64, 1.0f64), |m, t| (m.0.max(t.cmhz), m.1.max(t.gmhz)));
+    let (wc, wg) = weights(util);
+    ok.into_iter()
+        .map(|t| (t, wc * t.cmhz / max_c + if max_g > 1.0 { wg * t.gmhz / max_g } else { wg }))
+        .collect()
+}
+
+fn best_score(trials: &[Trial], util: f64) -> f64 {
+    scored(trials, util).iter().map(|x| x.1).fold(0.0, f64::max)
+}
+
+/// Apply one setting, let it heat-soak until temperatures level off, then measure.
+fn run_trial(n: u64, lim: Limits, pid: u32, slice: u64, o: &Opts) -> Result<Run, String> {
     apply(lim)?;
     let warmup = slice * 2 / 5;
-    say!("\nTrial {n}/{MAX_TRIALS}: CPU {}/{} W, GPU {} W - settling {warmup}s...", lim.pl1, lim.pl2, lim.gpu);
+    say!("\nTrial {n}/{MAX_TRIALS}: CPU {}/{} W, GPU {} W - settling...", lim.pl1, lim.pl2, lim.gpu);
     sleep_checked(warmup);
-    let (mut n, mut ct, mut gt, mut gw, mut gu, mut cw) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
+    let mut extra = 0; // keep waiting while temps still climb > 1°C per 30 s
+    while extra < slice / 4 && !STOP.load(Ordering::SeqCst) {
+        let t = |s: &Sample| s.cpu_t.max(s.gpu_t);
+        let before = t(&sample());
+        sleep_checked(30);
+        if (t(&sample()) - before).abs() < 1.0 {
+            break;
+        }
+        extra += 30;
+    }
+    let (mut n_s, mut active, mut ct, mut gt, mut gw, mut gu, mut cw) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
     let (mut hot, mut cmhz, mut gmhz) = (false, 0.0f64, 0.0f64);
     let thr0 = cpu_throttle_count();
     let (e0, t0) = (energy_uj(), Instant::now());
     let end = Instant::now() + Duration::from_secs(slice - warmup);
+    let mut last_cpu = proc_cpu_secs(pid);
     while Instant::now() < end && !STOP.load(Ordering::SeqCst) {
         if !alive(pid) {
             say!("Game exited - ending early.");
-            return Ok(None);
+            return Ok(Run::Stopped);
         }
         sleep_checked(5);
         let s = sample();
-        n += 1.0;
+        let cpu_now = proc_cpu_secs(pid);
+        let busy = cpu_now.zip(last_cpu).map(|(a, b)| (a - b) / 5.0).unwrap_or(0.0); // cores used by the game
+        last_cpu = cpu_now;
+        n_s += 1.0;
+        if s.gpu_util >= 20.0 || busy >= 0.3 {
+            active += 1.0;
+        }
         ct = ct.max(s.cpu_t); // peak temps matter, not averages
         gt = gt.max(s.gpu_t);
         gw += s.gpu_w;
@@ -300,25 +356,29 @@ fn run_trial(n: u64, k: u32, pid: u32, slice: u64, o: &Opts) -> Result<Option<Tr
         gmhz += s.gpu_mhz;
     }
     if STOP.load(Ordering::SeqCst) {
-        return Ok(None);
+        return Ok(Run::Stopped);
+    }
+    if active < n_s / 2.0 {
+        say!("  the game looks idle (menu or paused) - measurement discarded.");
+        return Ok(Run::Idle);
     }
     if let (Some(a), Some(b)) = (e0, energy_uj()) {
         cw = (b - a).max(0.0) / 1e6 / t0.elapsed().as_secs_f64();
     }
-    let (cmhz, gmhz) = (cmhz / n.max(1.0), gmhz / n.max(1.0));
+    let (cmhz, gmhz, util) = (cmhz / n_s.max(1.0), gmhz / n_s.max(1.0), gu / n_s.max(1.0));
     let cpu_thr = cpu_throttle_count() > thr0;
-    say!("  peak CPU {ct:.0}°C, peak GPU {gt:.0}°C | avg CPU {cw:.1} W / {cmhz:.0} MHz, GPU {:.1} W / {gmhz:.0} MHz, GPU util {:.0}%{}{}",
-        gw / n.max(1.0), gu / n.max(1.0), if hot { " | GPU THERMAL THROTTLE" } else { "" }, if cpu_thr { " | CPU THERMAL THROTTLE" } else { "" });
+    say!("  peak CPU {ct:.0}°C, peak GPU {gt:.0}°C | avg CPU {cw:.1} W / {cmhz:.0} MHz, GPU {:.1} W / {gmhz:.0} MHz, GPU util {util:.0}%{}{}",
+        gw / n_s.max(1.0), if hot { " | GPU THERMAL THROTTLE" } else { "" }, if cpu_thr { " | CPU THERMAL THROTTLE" } else { "" });
     let ok = !(ct > o.cpu_max || gt > o.gpu_max || hot || cpu_thr);
     if !ok {
         say!("  throttling or over the temperature cap.");
     }
-    Ok(Some(Trial { lim, cmhz, gmhz, ok }))
+    Ok(Run::Done(Trial { lim, cmhz, gmhz, util, ok }))
 }
 
 /// Let the laptop cool so a hot trial doesn't contaminate the next one.
 fn cooldown() {
-    apply(limits_for(K_MIN)).ok();
+    apply(limits_for(K_MIN, 0)).ok();
     say!("  cooling down...");
     for _ in 0..18 {
         let s = sample();
@@ -329,7 +389,34 @@ fn cooldown() {
     }
 }
 
-/// Bisect the CPU/GPU power budget in 1 W steps for the highest clocks that don't throttle.
+/// Run one trial, retrying once if the game was idle. Ok(None) = stopped or the game closed.
+fn go(n: &mut u64, k: u32, s: i32, pid: u32, slice: u64, o: &Opts, trials: &mut Vec<Trial>) -> Result<Option<bool>, String> {
+    for attempt in 0..2 {
+        *n += 1;
+        match run_trial(*n, limits_for(k, s), pid, slice, o)? {
+            Run::Stopped => return Ok(None),
+            Run::Idle if attempt == 0 => say!("  retrying - get into actual gameplay."),
+            Run::Idle => return Err("the game never put the machine under load - start playing, then tune again".into()),
+            Run::Done(t) => {
+                let ok = t.ok;
+                trials.push(t);
+                if !ok {
+                    cooldown();
+                }
+                return Ok(Some(ok));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Three phases:
+///  1. bisect the shared CPU+GPU budget in 1 W steps up to the thermal ceiling (throttle / temp caps);
+///  2. at the ceiling, move watts toward the bottleneck (GPU-bound game: CPU -> GPU, else the reverse)
+///     while the weighted clock score keeps improving - the two share one heatsink, so a watt is better
+///     spent where it is used;
+///  3. pick the knee: the cheapest unthrottled setting within 1.5% of the best score, so we don't burn
+///     heat and fan noise for the last sliver of MHz.
 fn tune(o: Opts) -> Result<(), String> {
     let (pid, name) = find_game(o.pid, o.game.as_deref()).ok_or("no game found - start the game first (or pick its process)")?;
     say!("Tuning for '{name}' (pid {pid}), {} min, caps: CPU {}°C / GPU {}°C", o.minutes, o.cpu_max, o.gpu_max);
@@ -349,46 +436,54 @@ fn tune(o: Opts) -> Result<(), String> {
     let original = current();
     let slice = (o.minutes * 60 / MAX_TRIALS).max(60);
     let mut trials: Vec<Trial> = vec![];
-    // lo = highest known-good k, hi = lowest known-bad k; both virtual until tested
-    let (mut lo, mut hi) = (K_MIN - 1, K_MAX + 1);
+    let (mut lo, mut hi) = (K_MIN - 1, K_MAX + 1); // highest known-good / lowest known-bad k (virtual until tested)
     let mut n = 0;
-    let mut aborted = false;
-    while hi - lo > 1 && n < MAX_TRIALS {
+    let mut stopped = false;
+
+    say!("Phase 1: finding the thermal ceiling");
+    while hi - lo > 1 && n < MAX_TRIALS - 3 {
         let mid = (lo + hi) / 2;
-        n += 1;
-        match run_trial(n, mid, pid, slice, &o)? {
-            None => { aborted = true; break; }
-            Some(t) => {
-                if t.ok { lo = mid } else { hi = mid; cooldown(); }
-                trials.push(t);
-            }
-        }
-    }
-    // spend leftover trials just below the boundary: clocks sometimes peak a little before the edge
-    let mut k = lo;
-    while !aborted && n < MAX_TRIALS && lo >= K_MIN && k > K_MIN && lo - k < 2 {
-        k -= 1;
-        n += 1;
-        match run_trial(n, k, pid, slice, &o)? {
-            None => aborted = true,
-            Some(t) => trials.push(t),
+        match go(&mut n, mid, 0, pid, slice, &o, &mut trials) {
+            Ok(Some(true)) => lo = mid,
+            Ok(Some(false)) => hi = mid,
+            Ok(None) => { stopped = true; break; }
+            Err(e) => { apply(original).ok(); return Err(e); }
         }
     }
 
-    if STOP.load(Ordering::SeqCst) || aborted && trials.is_empty() {
-        say!("\nStopped - restoring previous limits, nothing saved.");
+    // Phase 2: shift watts toward the bottleneck
+    let base_util = trials.iter().rev().find(|t| t.ok).map(|t| t.util);
+    if let (false, Some(util)) = (stopped, base_util) {
+        let dir = if util >= 90.0 { 1 } else { -1 };
+        say!("\nPhase 2: GPU util {util:.0}% -> {} - moving watts {}", if dir > 0 { "GPU-bound" } else { "CPU-bound" },
+            if dir > 0 { "from CPU to GPU" } else { "from GPU to CPU" });
+        let mut s = 0;
+        while n < MAX_TRIALS - 1 {
+            let before = best_score(&trials, util);
+            let next = s + dir * SPLIT_STEP;
+            match go(&mut n, lo, next, pid, slice, &o, &mut trials) {
+                Ok(Some(true)) if best_score(&trials, util) > before + 1e-3 => s = next,
+                Ok(Some(_)) => break,
+                Ok(None) => { stopped = true; break; }
+                Err(e) => { apply(original).ok(); return Err(e); }
+            }
+        }
+    }
+
+    if stopped && trials.iter().all(|t| !t.ok) {
+        say!("\nStopped before any setting passed - restoring previous limits, nothing saved.");
         return apply(original);
     }
-    // Best = highest combined clock speed (each normalised to the best seen) among trials that did not throttle.
-    let ok: Vec<&Trial> = trials.iter().filter(|t| t.ok).collect();
-    let (max_c, max_g) = ok.iter().fold((1.0f64, 1.0f64), |m, t| (m.0.max(t.cmhz), m.1.max(t.gmhz)));
-    let score = |t: &Trial| t.cmhz / max_c + if max_g > 1.0 { t.gmhz / max_g } else { 0.0 };
-    say!("\nResults (no throttling):");
-    for t in &ok {
-        say!("  CPU {}/{} W, GPU {} W -> {:.0} MHz CPU, {:.0} MHz GPU (score {:.3})", t.lim.pl1, t.lim.pl2, t.lim.gpu, t.cmhz, t.gmhz, score(t));
+    let util = base_util.unwrap_or(0.0);
+    let results = scored(&trials, util);
+    let top = results.iter().map(|x| x.1).fold(0.0, f64::max);
+    say!("\nResults (no throttling; weights CPU {:.0}% / GPU {:.0}%):", weights(util).0 * 100.0, weights(util).1 * 100.0);
+    for (t, sc) in &results {
+        say!("  CPU {}/{} W, GPU {} W -> {:.0} MHz CPU, {:.0} MHz GPU (score {:.3})", t.lim.pl1, t.lim.pl2, t.lim.gpu, t.cmhz, t.gmhz, sc);
     }
-    let pick = ok.iter().max_by(|a, b| score(a).partial_cmp(&score(b)).unwrap().then(a.lim.pl1.partial_cmp(&b.lim.pl1).unwrap()))
-        .map(|t| t.lim).unwrap_or_else(|| limits_for(K_MIN));
+    let pick = results.iter().filter(|x| x.1 >= top * 0.985)
+        .min_by(|a, b| (a.0.lim.pl1 + a.0.lim.gpu).partial_cmp(&(b.0.lim.pl1 + b.0.lim.gpu)).unwrap())
+        .map(|x| x.0.lim).unwrap_or_else(|| limits_for(K_MIN, 0));
     apply(pick)?;
     save_profile(&name, pick)?;
     say!("\nBest for '{name}': CPU {}/{} W, GPU {} W - applied and saved to {PROFILES}", pick.pl1, pick.pl2, pick.gpu);

@@ -4,10 +4,12 @@ Native GTK4 app (Rust) to cap CPU/GPU power on a Dell XPS 15 9510 (i7-11800H + R
 and auto-tune the limits per game so the laptop stops overheating.
 
 - **Presets & sliders** for CPU sustained (PL1), CPU burst (PL2) and GPU watts, with a live temperature/power graph.
-- **Auto-tune**: start a game, press *Start tuning*. For ~30 min it climbs a ladder of power levels,
-  measures average CPU and GPU clock speed (MHz) plus CPU/GPU thermal throttling at each level, and saves the level with the highest combined clocks that never throttles and stays under
-  your temperature caps (default 85 °C CPU / 80 °C GPU). There is no FPS reading, so "best" means the highest sustained clocks without throttling, not
-  measured frame rate.
+- **Auto-tune** (open a game, pick it by PID, press *Start tuning*, ~30 min), three phases:
+  1. bisects the shared CPU+GPU power budget in 1 W steps up to the thermal ceiling (thermal throttling or your temperature caps);
+  2. at the ceiling, moves watts toward the bottleneck (GPU-bound game: CPU to GPU, otherwise the reverse) while the weighted CPU/GPU clock score keeps improving;
+  3. picks the knee: the cheapest unthrottled setting within 1.5% of the best score, so it doesn't spend heat and fan noise on the last sliver of MHz.
+  It waits for temperatures to level off before measuring and discards samples while the game is idle (menus, pause).
+  There is no FPS reading, so "best" means the highest sustained clocks without throttling.
 - **Saved profiles** appear in the window with Apply / delete buttons; tick *Auto-apply* (or run `sudo powerlimit watch`) to switch profiles automatically when a game starts.
 - Limits live in RAPL (`/sys/class/powercap`) and `nvidia-smi -pl`; they reset on reboot.
   Some laptops lock the GPU power limit, in which case only the CPU limit is applied.
