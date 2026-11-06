@@ -12,7 +12,12 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 const RAPL: &str = "/sys/class/powercap/intel-rapl:0";
-const PROFILES: &str = "/etc/powerlimit/profiles.conf";
+const LAST: &str = "/run/powerlimit/last";
+
+/// Profiles file; POWERLIMIT_PROFILES overrides it (used for UI testing).
+fn profiles_path() -> String {
+    std::env::var("POWERLIMIT_PROFILES").unwrap_or_else(|_| "/etc/powerlimit/profiles.conf".into())
+}
 /// GPU throttle bits that mean "too hot": SW thermal, HW slowdown, HW thermal, power brake.
 const THERMAL_MASK: u64 = 0x20 | 0x08 | 0x40 | 0x80;
 
@@ -59,19 +64,35 @@ fn apply(l: Limits) -> Result<(), String> {
     write_w(&format!("{RAPL}/constraint_0_power_limit_uw"), l.pl1)?;
     write_w(&format!("{RAPL}/constraint_1_power_limit_uw"), l.pl2)?;
     let out = Command::new("nvidia-smi").args(["-pl", &l.gpu.to_string()]).output();
-    match out {
-        Ok(o) if o.status.success() => {}
-        Ok(o) => eprintln!("note: GPU limit not applied: {}", String::from_utf8_lossy(&o.stdout).trim()),
-        Err(e) => eprintln!("note: nvidia-smi failed: {e}"),
-    }
+    let gpu_ok = match out {
+        Ok(o) if o.status.success() => true,
+        Ok(o) => {
+            eprintln!("note: GPU limit not applied: {}", String::from_utf8_lossy(&o.stdout).trim());
+            false
+        }
+        Err(e) => {
+            eprintln!("note: nvidia-smi failed: {e}");
+            false
+        }
+    };
+    // the driver may not report the GPU limit back, so remember what we set (the UI reads this)
+    let _ = fs::create_dir_all("/run/powerlimit");
+    let _ = fs::write(LAST, format!("{} {} {} {}\n", l.pl1, l.pl2, l.gpu, gpu_ok));
     Ok(())
+}
+
+/// Last limits we applied this boot, and whether the GPU part took effect.
+fn last_applied() -> Option<(Limits, bool)> {
+    let t = fs::read_to_string(LAST).ok()?;
+    let f: Vec<&str> = t.split_whitespace().collect();
+    Some((Limits { pl1: f.first()?.parse().ok()?, pl2: f.get(1)?.parse().ok()?, gpu: f.get(2)?.parse().ok()? }, f.get(3) == Some(&"true")))
 }
 
 fn current() -> Limits {
     Limits {
         pl1: read_f(&format!("{RAPL}/constraint_0_power_limit_uw")).unwrap_or(0.0) / 1e6,
         pl2: read_f(&format!("{RAPL}/constraint_1_power_limit_uw")).unwrap_or(0.0) / 1e6,
-        gpu: nvsmi("power.limit").and_then(|s| s.parse().ok()).unwrap_or(0.0),
+        gpu: nvsmi("power.limit").and_then(|s| s.parse().ok()).filter(|g: &f64| *g > 0.0).or_else(|| last_applied().filter(|l| l.1).map(|l| l.0.gpu)).unwrap_or(0.0),
     }
 }
 
@@ -204,7 +225,7 @@ fn find_game(pid: Option<u32>, filter: Option<&str>) -> Option<(u32, String)> {
 
 fn load_profiles() -> HashMap<String, Limits> {
     let mut m = HashMap::new();
-    for l in fs::read_to_string(PROFILES).unwrap_or_default().lines() {
+    for l in fs::read_to_string(profiles_path()).unwrap_or_default().lines() {
         if let Some((name, v)) = l.rsplit_once('=') {
             let n: Vec<f64> = v.split(',').filter_map(|x| x.parse().ok()).collect();
             if n.len() == 3 {
@@ -220,8 +241,11 @@ fn save_profile(name: &str, l: Limits) -> Result<(), String> {
     m.insert(name.to_string(), l);
     let mut text: Vec<String> = m.iter().map(|(k, v)| format!("{k}={},{},{}", v.pl1, v.pl2, v.gpu)).collect();
     text.sort();
-    fs::create_dir_all("/etc/powerlimit").map_err(|e| e.to_string())?;
-    fs::write(PROFILES, text.join("\n") + "\n").map_err(|e| e.to_string())
+    let path = profiles_path();
+    if let Some(dir) = std::path::Path::new(&path).parent() {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    fs::write(&path, text.join("\n") + "\n").map_err(|e| e.to_string())
 }
 
 const UDEV_RULE: &str = "/etc/udev/rules.d/99-powerlimit.rules";
@@ -244,7 +268,7 @@ fn forget(name: &str) -> Result<(), String> {
     m.remove(name).ok_or(format!("no profile '{name}'"))?;
     let mut text: Vec<String> = m.iter().map(|(k, v)| format!("{k}={},{},{}", v.pl1, v.pl2, v.gpu)).collect();
     text.sort();
-    fs::write(PROFILES, text.join("\n") + "\n").map_err(|e| e.to_string())
+    fs::write(profiles_path(), text.join("\n") + "\n").map_err(|e| e.to_string())
 }
 
 fn alive(pid: u32) -> bool {
@@ -501,7 +525,7 @@ fn tune(o: Opts) -> Result<(), String> {
         .map(|x| x.0.lim).unwrap_or_else(|| limits_for(K_MIN, 0));
     apply(pick)?;
     save_profile(&name, pick)?;
-    say!("\nBest for '{name}': CPU {}/{} W, GPU {} W - applied and saved to {PROFILES}", pick.pl1, pick.pl2, pick.gpu);
+    say!("\nBest for '{name}': CPU {}/{} W, GPU {} W - applied and saved to {}", pick.pl1, pick.pl2, pick.gpu, profiles_path());
     Ok(())
 }
 

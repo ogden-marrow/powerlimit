@@ -1,6 +1,6 @@
 [package]
 name = "powerlimit"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "CPU/GPU power limiter and per-game auto-tuner for the Dell XPS 15 9510"
 license = "MIT"

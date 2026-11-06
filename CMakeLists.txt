@@ -11,7 +11,7 @@ add_custom_command(
   OUTPUT ${BIN}
   COMMAND ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${CMAKE_CURRENT_BINARY_DIR}/cargo
           ${CARGO} build --release --manifest-path ${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml
-  DEPENDS src/main.rs src/gui.rs src/style.css src/style-dark.css Cargo.toml
+  DEPENDS src/main.rs src/gui.rs src/style.css Cargo.toml
   COMMENT "cargo build --release")
 add_custom_target(powerlimit ALL DEPENDS ${BIN})
 

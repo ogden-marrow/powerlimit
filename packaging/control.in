@@ -4,7 +4,7 @@ Section: utils
 Priority: optional
 Architecture: @ARCH@
 Depends: libc6, libgtk-4-1, policykit-1 | pkexec
-Recommends: nvidia-utils-535 | nvidia-utils-550 | nvidia-utils-560 | nvidia-utils
+Recommends: fonts-ibm-plex, nvidia-utils-535 | nvidia-utils-550 | nvidia-utils-560 | nvidia-utils
 Maintainer: powerlimit contributors <noreply@users.noreply.github.com>
 Homepage: https://github.com/ogden-marrow/powerlimit
 Description: CPU/GPU power limiter and per-game auto-tuner

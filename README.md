@@ -20,12 +20,16 @@ and auto-tune the limits per game so the laptop stops overheating.
 
 Other Intel laptops with RAPL may work, but this is only tested on the XPS 15 9510. Use at your own risk.
 
+## Look and feel
+
+A "console" interface: striped title bar, keycap buttons, dot-leader tables, ring dials. Pick **Sepia** or **Dark (Monokai Pro style)**, or follow the system, and choose a monospace font from the appearance menu in the header bar (IBM Plex Mono is the default; install `fonts-ibm-plex` for it). The window resizes from 480 px wide up, switching between side-by-side and stacked layouts.
+
 ## Install
 
 **Easiest (Ubuntu/Debian):** download the `.deb` from the [latest release](https://github.com/ogden-marrow/powerlimit/releases/latest), then double-click it (Software / App Center) or run:
 
 ```bash
-sudo apt install ./powerlimit_0.1.0_amd64.deb
+sudo apt install ./powerlimit_0.2.0_amd64.deb
 ```
 
 Open **Power Limiter** from the app menu. Remove it with `sudo apt remove powerlimit`.
@@ -49,3 +53,7 @@ sudo powerlimit tune --game <name> --minutes 30 --cpu-max 85 --gpu-max 80
 sudo powerlimit watch
 ```
 Profiles are saved to `/etc/powerlimit/profiles.conf`.
+
+## Testing the UI at different sizes
+
+`POWERLIMIT_SHOT=<dir> POWERLIMIT_SHOT_SIZES=1280x900,480x600 POWERLIMIT_SHOT_THEMES=dark,sepia powerlimit gui` saves a PNG of every page for each theme and size, and logs when the window couldn't reach the requested size. `POWERLIMIT_DEMO=1` fills the Tune page with sample trials, and `POWERLIMIT_PROFILES=<file>` points the app at a test profiles file.
