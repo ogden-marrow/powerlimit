@@ -1,3 +1,4 @@
 target/
 build/
 data/org.powerlimit.policy
+dist/

@@ -1,5 +1,7 @@
 # powerlimit
 
+<img src="docs/icon.png" width="96" align="right">
+
 Native GTK4 app (Rust) to cap CPU/GPU power on a Dell XPS 15 9510 (i7-11800H + RTX 3050 Ti)
 and auto-tune the limits per game so the laptop stops overheating.
 
@@ -18,16 +20,24 @@ and auto-tune the limits per game so the laptop stops overheating.
 
 Other Intel laptops with RAPL may work, but this is only tested on the XPS 15 9510. Use at your own risk.
 
-## Build & install
+## Install
 
-Needs Rust, GTK 4 dev files (`libgtk-4-dev`), and `pkexec`/polkit. NVIDIA driver for GPU control.
+**Easiest (Ubuntu/Debian):** download the `.deb` from the [latest release](https://github.com/ogden-marrow/powerlimit/releases/latest), then double-click it (Software / App Center) or run:
 
 ```bash
-make && sudo make install          # or:
-cmake -B build && cmake --build build && sudo cmake --install build
+sudo apt install ./powerlimit_0.1.0_amd64.deb
 ```
 
-Uninstall with `sudo make uninstall`. Then launch **Power Limiter** from the app menu, or run `powerlimit`.
+Open **Power Limiter** from the app menu. Remove it with `sudo apt remove powerlimit`.
+
+**From source** - needs Rust, GTK 4 dev files (`libgtk-4-dev`), `pkexec`/polkit; NVIDIA driver for GPU control:
+
+```bash
+make && sudo make install          # or: cmake -B build && cmake --build build && sudo cmake --install build
+make deb                           # build your own .deb into dist/
+```
+
+Uninstall with `sudo make uninstall`.
 
 ## CLI
 

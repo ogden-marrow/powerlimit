@@ -211,6 +211,7 @@ fn draw_graph(cr: &cairo::Context, w: f64, h: f64, hist: &[(f64, f64, f64)]) {
 // ---------------------------------------------------------------- window
 
 fn build(app: &gtk::Application) {
+    gtk::Window::set_default_icon_name("powerlimit");
     // Follow the system: GTK's own text colour tells us whether the theme is dark.
     let probe = gtk::Label::new(None);
     #[allow(deprecated)]
