@@ -1,0 +1,53 @@
+/* Light is the default; dark overrides follow in the media query. Every colour is set explicitly so the
+   look is the same whatever GTK theme is installed. */
+window.pl-window, window.pl-window > box, .pl-page { background: #f5f5f7; color: #1d1d1f; font-family: "Inter", "SF Pro Text", "Cantarell", system-ui, sans-serif; }
+headerbar.pl-header { background: #f5f5f7; color: #1d1d1f; box-shadow: none; border-bottom: 1px solid rgba(0,0,0,0.06); min-height: 52px; }
+headerbar.pl-header stackswitcher button { padding: 5px 18px; border-radius: 8px; color: #1d1d1f; background: transparent; border: none; box-shadow: none; font-weight: 500; }
+headerbar.pl-header stackswitcher button:checked { background: #ffffff; box-shadow: 0 1px 3px rgba(0,0,0,0.15); }
+headerbar.pl-header stackswitcher { background: rgba(0,0,0,0.06); border-radius: 10px; padding: 2px; }
+
+.card { background: #ffffff; border-radius: 18px; padding: 18px 20px; box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.04); color: #1d1d1f; }
+.section { font-size: 12px; font-weight: 600; letter-spacing: 0.6px; color: #6e6e73; margin: 6px 4px 0 4px; }
+.secondary, .hint { color: #6e6e73; }
+.hint { font-size: 13px; }
+.row-sep { background: rgba(0,0,0,0.07); min-height: 1px; margin: 10px 0; }
+
+.tile-name { font-size: 13px; font-weight: 600; letter-spacing: 0.5px; color: #6e6e73; }
+.temp-big { font-size: 52px; font-weight: 700; letter-spacing: -1px; }
+.temp-big.ok { color: #1f9d4c; } .temp-big.warm { color: #d97706; } .temp-big.hot { color: #e11d2e; }
+.tile-detail { font-size: 14px; color: #6e6e73; }
+.legend-dot { font-size: 12px; color: #6e6e73; }
+
+.segmented { background: rgba(0,0,0,0.06); border-radius: 10px; padding: 2px; }
+.segmented button { background: transparent; border: none; box-shadow: none; border-radius: 8px; padding: 7px 10px; color: #1d1d1f; font-weight: 500; min-height: 0; }
+.segmented button:checked { background: #ffffff; box-shadow: 0 1px 3px rgba(0,0,0,0.18); }
+
+.row-title { font-weight: 500; font-size: 15px; }
+.value-pill { background: rgba(0,0,0,0.06); border-radius: 8px; padding: 2px 10px; font-weight: 600; font-feature-settings: "tnum"; min-width: 56px; }
+scale trough { background: rgba(0,0,0,0.1); background-image: none; border: none; min-height: 5px; border-radius: 3px; }
+scale trough highlight { background: #0071e3; background-image: none; border: none; border-radius: 3px; }
+scale trough fill { background: #0071e3; background-image: none; border: none; border-radius: 3px; }
+scale slider { background: #ffffff; min-width: 22px; min-height: 22px; border-radius: 11px; box-shadow: 0 1px 4px rgba(0,0,0,0.3); border: none; margin: -9px 0; }
+
+button.pill { background: #0071e3; color: #ffffff; border: none; box-shadow: none; border-radius: 999px; padding: 9px 26px; font-weight: 600; }
+button.pill:hover { background: #0077ed; }
+button.pill:disabled { background: rgba(0,0,0,0.12); color: rgba(0,0,0,0.35); }
+button.pill.danger { background: #e11d2e; }
+button.quiet { background: transparent; border: none; box-shadow: none; color: #0071e3; font-weight: 500; }
+button.quiet:hover { background: rgba(0,113,227,0.08); }
+button.quiet.danger { color: #e11d2e; }
+button.icon-quiet { background: transparent; border: none; box-shadow: none; color: #6e6e73; border-radius: 8px; }
+button.icon-quiet:hover { background: rgba(0,0,0,0.06); }
+
+.hero-title { font-size: 26px; font-weight: 700; letter-spacing: -0.4px; }
+.big-phase { font-size: 22px; font-weight: 700; }
+progressbar trough, progressbar progress { min-height: 8px; border-radius: 4px; }
+progressbar trough { background: rgba(0,0,0,0.08); }
+progressbar progress { background: #0071e3; }
+.result-ok { color: #1f9d4c; font-weight: 600; }
+.badge { background: rgba(31,157,76,0.14); color: #1f9d4c; border-radius: 999px; padding: 1px 9px; font-size: 11px; font-weight: 700; }
+.profile-name { font-weight: 600; font-size: 16px; }
+.log { font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace; font-size: 12px; background: rgba(0,0,0,0.04); color: #1d1d1f; border-radius: 10px; padding: 8px; }
+.toast { background: rgba(29,29,31,0.92); color: #ffffff; border-radius: 999px; padding: 10px 20px; font-weight: 500; box-shadow: 0 6px 24px rgba(0,0,0,0.25); }
+entry, combobox button, spinbutton { border-radius: 10px; }
+

@@ -3,6 +3,8 @@
 Native GTK4 app (Rust) to cap CPU/GPU power on a Dell XPS 15 9510 (i7-11800H + RTX 3050 Ti)
 and auto-tune the limits per game so the laptop stops overheating.
 
+![Overview](docs/overview.png)
+
 - **Presets & sliders** for CPU sustained (PL1), CPU burst (PL2) and GPU watts, with a live temperature/power graph.
 - **Auto-tune** (open a game, pick it by PID, press *Start tuning*, ~30 min), three phases:
   1. bisects the shared CPU+GPU power budget in 1 W steps up to the thermal ceiling (thermal throttling or your temperature caps);
