@@ -1,12 +1,13 @@
 [package]
 name = "powerlimit"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "CPU/GPU power limiter and per-game auto-tuner for the Dell XPS 15 9510"
 license = "MIT"
 
 [dependencies]
-gtk4 = "0.11"
+gtk4 = { version = "0.11", features = ["v4_10"] }
+ksni = { version = "0.3", features = ["blocking"] }
 
 [profile.release]
 opt-level = 2

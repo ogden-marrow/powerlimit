@@ -2,6 +2,7 @@
 //! std-only; limits are written via Intel RAPL (sysfs) and `nvidia-smi -pl`.
 
 mod gui;
+mod tray;
 
 use std::collections::HashMap;
 use std::fs;
@@ -589,7 +590,14 @@ Run root commands with sudo. Limits reset on reboot.");
 }
 
 fn main() {
-    let a: Vec<String> = std::env::args().skip(1).collect();
+    let mut a: Vec<String> = std::env::args().skip(1).collect();
+    // `--profiles PATH` (given by the GUI, so root helpers use the same file the user chose)
+    if let Some(i) = a.iter().position(|x| x == "--profiles") {
+        if let Some(p) = a.get(i + 1).cloned() {
+            std::env::set_var("POWERLIMIT_PROFILES", p);
+            a.drain(i..i + 2);
+        }
+    }
     let cmd = a.first().map(String::as_str).unwrap_or("");
     if matches!(cmd, "set" | "reset" | "tune" | "watch" | "forget") && !is_root() {
         eprintln!("needs root: run with sudo");
@@ -633,8 +641,7 @@ fn main() {
         }
         "watch" => watch(a.iter().any(|x| x == "--stdin-stop")),
         "forget" => forget(a.get(1).map(String::as_str).unwrap_or("")),
-        "gui" => { gui::run(); Ok(()) }
-        "" => { gui::run(); Ok(()) }
+        "gui" | "" => { gui::run(a.iter().any(|x| x == "--background")); Ok(()) }
         _ => { usage(); Ok(()) }
     };
     if let Err(e) = res {

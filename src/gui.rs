@@ -84,18 +84,70 @@ fn cfg_path() -> std::path::PathBuf {
     base.join("powerlimit").join("ui.conf")
 }
 
-fn load_cfg() -> (String, String) {
-    let t = std::fs::read_to_string(cfg_path()).unwrap_or_default();
-    let get = |k: &str| t.lines().find_map(|l| l.strip_prefix(&format!("{k}="))).map(str::to_string);
-    (get("theme").unwrap_or("auto".into()), get("font").unwrap_or("IBM Plex Mono".into()))
+#[derive(Clone)]
+struct Cfg {
+    theme: String,
+    font: String,
+    tray: bool,
+    close_to_tray: bool,
+    startup: String,
+    login_watch: bool,
+    profiles: String,
+    minutes: f64,
+    cpu_max: f64,
+    gpu_max: f64,
+    last: String,
 }
 
-fn save_cfg(theme: &str, font: &str) {
+fn load_cfg() -> Cfg {
+    let t = std::fs::read_to_string(cfg_path()).unwrap_or_default();
+    let get = |k: &str| t.lines().find_map(|l| l.strip_prefix(&format!("{k}="))).map(str::to_string);
+    let flag = |k: &str, d: bool| get(k).map(|v| v == "1").unwrap_or(d);
+    let num = |k: &str, d: f64| get(k).and_then(|v| v.parse().ok()).unwrap_or(d);
+    Cfg {
+        theme: get("theme").unwrap_or("auto".into()),
+        font: get("font").unwrap_or("IBM Plex Mono".into()),
+        tray: flag("tray", true),
+        close_to_tray: flag("close_to_tray", true),
+        startup: get("startup").unwrap_or("none".into()),
+        login_watch: flag("login_watch", false),
+        profiles: get("profiles").unwrap_or_default(),
+        minutes: num("minutes", 30.0),
+        cpu_max: num("cpu_max", 85.0),
+        gpu_max: num("gpu_max", 80.0),
+        last: get("last").unwrap_or_default(),
+    }
+}
+
+fn save_cfg(c: &Cfg) {
+    if std::env::var("POWERLIMIT_SHOT").is_ok() {
+        return;
+    }
     let p = cfg_path();
     if let Some(d) = p.parent() {
         let _ = std::fs::create_dir_all(d);
     }
-    let _ = std::fs::write(p, format!("theme={theme}\nfont={font}\n"));
+    let b = |v: bool| if v { 1 } else { 0 };
+    let _ = std::fs::write(p, format!(
+        "theme={}\nfont={}\ntray={}\nclose_to_tray={}\nstartup={}\nlogin_watch={}\nprofiles={}\nminutes={}\ncpu_max={}\ngpu_max={}\nlast={}\n",
+        c.theme, c.font, b(c.tray), b(c.close_to_tray), c.startup, b(c.login_watch), c.profiles, c.minutes, c.cpu_max, c.gpu_max, c.last));
+}
+
+fn autostart_path() -> std::path::PathBuf {
+    cfg_path().parent().and_then(|d| d.parent()).map(|d| d.join("autostart").join("io.github.powerlimit.desktop")).unwrap_or_default()
+}
+
+fn set_autostart(on: bool) {
+    let p = autostart_path();
+    if !on {
+        let _ = std::fs::remove_file(p);
+        return;
+    }
+    if let Some(d) = p.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    let _ = std::fs::write(p, format!(
+        "[Desktop Entry]\nType=Application\nName=Power Limiter\nComment=Menu-bar indicator and login limits\nExec={} gui --background\nIcon=powerlimit\nTerminal=false\nX-GNOME-Autostart-enabled=true\nX-GNOME-Autostart-Delay=5\n", exe()));
 }
 
 /// Shared look state: current palette, CSS provider, and every custom-drawn widget to repaint on change.
@@ -210,10 +262,20 @@ fn exe() -> String {
     std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "powerlimit".into())
 }
 
+/// `pkexec powerlimit [--profiles PATH]`: root helpers use the profiles file the user chose.
+fn pk() -> Command {
+    let mut c = Command::new("pkexec");
+    c.arg(exe());
+    if let Ok(p) = std::env::var("POWERLIMIT_PROFILES") {
+        c.args(["--profiles", &p]);
+    }
+    c
+}
+
 /// Run `pkexec powerlimit <args>` off the UI thread.
 fn privileged(args: Vec<String>, tx: mpsc::Sender<Msg>) {
     std::thread::spawn(move || {
-        let r = match Command::new("pkexec").arg(exe()).args(&args).output() {
+        let r = match pk().args(&args).output() {
             Ok(o) if o.status.success() => Ok(()),
             Ok(o) if o.status.code() == Some(126) => Err("Authentication cancelled".into()),
             Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim().to_string()),
@@ -333,15 +395,24 @@ fn applied_name(l: &Limits) -> String {
 
 const PRESETS: [(&str, f64, f64, f64); 3] = [("QUIET", 25.0, 35.0, 25.0), ("BALANCED", 35.0, 45.0, 30.0), ("PERFORM", 45.0, 65.0, 40.0)];
 
-pub fn run() {
-    let app = gtk::Application::builder().application_id("io.github.powerlimit").build();
-    app.connect_activate(build);
+pub fn run(background: bool) {
+    let flags = if std::env::var("POWERLIMIT_SHOT").is_ok() { gtk::gio::ApplicationFlags::NON_UNIQUE } else { gtk::gio::ApplicationFlags::FLAGS_NONE };
+    let app = gtk::Application::builder().application_id("io.github.powerlimit").flags(flags).build();
+    let first = Cell::new(background);
+    app.connect_activate(move |a| {
+        if let Some(w) = a.windows().first() {
+            w.set_visible(true);
+            w.present();
+            return;
+        }
+        build(a, first.replace(false));
+    });
     app.run_with_args::<&str>(&[]);
 }
 
 // ---------------------------------------------------------------- window
 
-fn build(app: &gtk::Application) {
+fn build(app: &gtk::Application, background: bool) {
     gtk::Window::set_default_icon_name("powerlimit");
 
     let probe = gtk::Label::new(None);
@@ -354,8 +425,12 @@ fn build(app: &gtk::Application) {
     if let Some(display) = gtk::gdk::Display::default() {
         gtk::style_context_add_provider_for_display(&display, &look.provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
     }
-    let (theme0, font0) = load_cfg();
-    look.apply(&theme0, &font0);
+    let cfg0 = load_cfg();
+    if !cfg0.profiles.is_empty() && std::env::var("POWERLIMIT_PROFILES").is_err() {
+        std::env::set_var("POWERLIMIT_PROFILES", &cfg0.profiles);
+    }
+    let cfg = Rc::new(RefCell::new(cfg0));
+    look.apply(&cfg.borrow().theme, &cfg.borrow().font);
 
     let (tx, rx) = mpsc::channel::<Msg>();
     let stdin: Rc<RefCell<Option<ChildStdin>>> = Rc::new(RefCell::new(None));
@@ -392,53 +467,19 @@ fn build(app: &gtk::Application) {
         }
         v
     };
-    let appearance = gtk::MenuButton::new();
-    appearance.set_icon_name("preferences-desktop-appearance-symbolic");
-    appearance.add_css_class("quiet");
-    appearance.set_tooltip_text(Some("Appearance"));
-    let pop = gtk::Popover::new();
-    let pbox = vbox(10);
-    pbox.set_margin_top(12);
-    pbox.set_margin_bottom(12);
-    pbox.set_margin_start(12);
-    pbox.set_margin_end(12);
-    pbox.append(&label("THEME", &["eyebrow"]));
-    let theme_dd = gtk::DropDown::from_strings(&["Match system", "Dark (Monokai Pro)", "Sepia"]);
-    theme_dd.set_selected(match theme0.as_str() { "dark" => 1, "sepia" => 2, _ => 0 });
-    pbox.append(&theme_dd);
-    pbox.append(&label("FONT", &["eyebrow"]));
-    let fam_refs: Vec<&str> = families.iter().map(String::as_str).collect();
-    let font_dd = gtk::DropDown::from_strings(&fam_refs);
-    font_dd.set_selected(families.iter().position(|f| *f == font0).unwrap_or(0) as u32);
-    pbox.append(&font_dd);
-    pop.set_child(Some(&pbox));
-    appearance.set_popover(Some(&pop));
-    header.pack_end(&appearance);
+    header.set_decoration_layout(Some(":minimize,maximize,close"));
     win.set_titlebar(Some(&header));
 
-    let theme_key = Rc::new(RefCell::new(theme0.clone()));
-    let font_key = Rc::new(RefCell::new(if families.contains(&font0) { font0.clone() } else { families[0].clone() }));
+    if !families.contains(&cfg.borrow().font) {
+        cfg.borrow_mut().font = families[0].clone();
+    }
     let restyle: Rc<dyn Fn()> = {
-        let (look, theme_key, font_key) = (look.clone(), theme_key.clone(), font_key.clone());
+        let (look, cfg) = (look.clone(), cfg.clone());
         Rc::new(move || {
-            look.apply(&theme_key.borrow(), &font_key.borrow());
-            save_cfg(&theme_key.borrow(), &font_key.borrow());
+            look.apply(&cfg.borrow().theme, &cfg.borrow().font);
+            save_cfg(&cfg.borrow());
         })
     };
-    {
-        let (tk, rs) = (theme_key.clone(), restyle.clone());
-        theme_dd.connect_selected_notify(move |d| {
-            *tk.borrow_mut() = ["auto", "dark", "sepia"][d.selected().min(2) as usize].to_string();
-            rs();
-        });
-        let (fk, rs, fam) = (font_key.clone(), restyle.clone(), families.clone());
-        font_dd.connect_selected_notify(move |d| {
-            if let Some(f) = fam.get(d.selected() as usize) {
-                *fk.borrow_mut() = f.clone();
-                rs();
-            }
-        });
-    }
 
     // body: tabs, pages, status bar
     let root = vbox(0);
@@ -474,12 +515,12 @@ fn build(app: &gtk::Application) {
     stack.set_vexpand(true);
     stack.set_hhomogeneous(false);
     stack.set_vhomogeneous(false);
-    let tabs = hbox(10);
-    tabs.set_margin_start(22);
-    tabs.set_margin_end(22);
-    tabs.set_margin_top(14);
+    let tabs = hbox(8);
+    tabs.set_margin_start(24);
+    tabs.set_margin_end(24);
+    tabs.set_margin_top(16);
     let mut tab_btns: Vec<gtk::ToggleButton> = vec![];
-    for (id, name) in [("overview", "OVERVIEW"), ("tune", "TUNE"), ("profiles", "PROFILES")] {
+    for (id, name) in [("overview", "OVERVIEW"), ("tune", "TUNE"), ("profiles", "PROFILES"), ("settings", "SETTINGS")] {
         let b = gtk::ToggleButton::with_label(name);
         b.add_css_class("key");
         if let Some(first) = tab_btns.first() {
@@ -498,10 +539,10 @@ fn build(app: &gtk::Application) {
     root.append(&stack);
 
     let page = |child: &gtk::Box| -> gtk::ScrolledWindow {
-        child.set_margin_top(18);
-        child.set_margin_bottom(22);
-        child.set_margin_start(22);
-        child.set_margin_end(22);
+        child.set_margin_top(24);
+        child.set_margin_bottom(24);
+        child.set_margin_start(24);
+        child.set_margin_end(24);
         let sw = gtk::ScrolledWindow::new();
         // content that cannot fit scrolls sideways instead of forcing the window wider
         sw.set_hscrollbar_policy(gtk::PolicyType::Automatic);
@@ -515,9 +556,10 @@ fn build(app: &gtk::Application) {
         Rc::new(RefCell::new((l.pl1.clamp(15.0, 65.0), l.pl2.clamp(15.0, 109.0), if l.gpu >= 10.0 { l.gpu } else { 30.0 })))
     };
     let dial_state = Rc::new(Cell::new((0.5f64, 0.6f64)));
+    let temps = Rc::new(Cell::new((0.0f64, 0.0f64)));
 
     let overview = vbox(0);
-    let body = gtk::Box::new(gtk::Orientation::Vertical, 22);
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 24);
     overview.append(&body);
 
     let dial_panel = panel();
@@ -838,9 +880,9 @@ fn build(app: &gtk::Application) {
         let fill = fill.clone();
         reload.connect_clicked(move |_| fill());
     }
-    let minutes = spin(6.0, 240.0, 30.0);
-    let cmax = spin(60.0, 100.0, 85.0);
-    let gmax = spin(60.0, 95.0, 80.0);
+    let minutes = spin(6.0, 240.0, cfg.borrow().minutes);
+    let cmax = spin(60.0, 100.0, cfg.borrow().cpu_max);
+    let gmax = spin(60.0, 95.0, cfg.borrow().gpu_max);
     opts.append(&setting_row("Game", "Pick the running game, or auto-detect.", &game_box));
     for (t, s, w) in [("Duration", "Minutes. Longer gives steadier readings.", &minutes), ("CPU temperature limit", "°C. Never go hotter than this.", &cmax), ("GPU temperature limit", "°C", &gmax)] {
         let sep = rule();
@@ -947,8 +989,8 @@ fn build(app: &gtk::Application) {
         let (phase, trial, detail, bar, log, result, prog, trials, render) =
             (phase.clone(), trial.clone(), detail.clone(), bar.clone(), log.clone(), result.clone(), prog.clone(), trials.clone(), render_trials.clone());
         start.connect_clicked(move |_| {
-            let mut cmd = Command::new("pkexec");
-            cmd.arg(exe()).args(["tune", "--stdin-stop", "--minutes", &minutes.value().to_string(),
+            let mut cmd = pk();
+            cmd.args(["tune", "--stdin-stop", "--minutes", &minutes.value().to_string(),
                 "--cpu-max", &cmax.value().to_string(), "--gpu-max", &gmax.value().to_string()]);
             if let Some(pid) = game_ids.borrow().get(game.selected() as usize).filter(|id| id.as_str() != "auto") {
                 cmd.args(["--pid", pid.as_str()]);
@@ -1038,7 +1080,7 @@ fn build(app: &gtk::Application) {
         let (tx, watcher) = (tx.clone(), watcher.clone());
         auto_on.connect_toggled(move |c| {
             if c.is_active() {
-                let spawned = Command::new("pkexec").arg(exe()).args(["watch", "--stdin-stop"])
+                let spawned = pk().args(["watch", "--stdin-stop"])
                     .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn();
                 match spawned {
                     Ok(mut child) => {
@@ -1195,11 +1237,12 @@ fn build(app: &gtk::Application) {
         });
     }
     let sensors_tick = {
-        let (fr, row_ct, row_gt, val_ct, val_gt, temps_lbl) = (fr.clone(), row_ct.clone(), row_gt.clone(), val_ct.clone(), val_gt.clone(), temps_lbl.clone());
+        let (fr, row_ct, row_gt, val_ct, val_gt, temps_lbl, temps) = (fr.clone(), row_ct.clone(), row_gt.clone(), val_ct.clone(), val_gt.clone(), temps_lbl.clone(), temps.clone());
         let _ = (&row_ct, &row_gt);
         move || {
             let s = sample();
             fr.set((s.cpu_t / 100.0, s.gpu_t / 100.0));
+            temps.set((s.cpu_t, s.gpu_t));
             val_ct.set_text(&format!("{:.0}°", s.cpu_t));
             val_gt.set_text(&format!("{:.0}°", s.gpu_t));
             temps_lbl.set_text(&format!("CPU {:.0}° · GPU {:.0}°", s.cpu_t, s.gpu_t));
@@ -1221,10 +1264,339 @@ fn build(app: &gtk::Application) {
         });
     }
 
+    // ======================= Settings
+    let (tray_tx, tray_rx) = mpsc::channel::<crate::tray::Cmd>();
+    let tray_h: Rc<RefCell<Option<crate::tray::TrayHandle>>> = Rc::new(RefCell::new(None));
+    let start_tray: Rc<dyn Fn() -> bool> = {
+        let tray_h = tray_h.clone();
+        Rc::new(move || {
+            if tray_h.borrow().is_some() {
+                return true;
+            }
+            let names = PRESETS.iter().map(|(n, a, b, c)| format!("{} · {:.0}/{:.0} W · GPU {:.0} W", title_case(n), a, b, c)).collect();
+            match crate::tray::spawn(tray_tx.clone(), names) {
+                Some(t) => {
+                    *tray_h.borrow_mut() = Some(t);
+                    true
+                }
+                None => false,
+            }
+        })
+    };
+    let tray_tick: Rc<dyn Fn()> = {
+        let (tray_h, temps) = (tray_h.clone(), temps.clone());
+        Rc::new(move || {
+            if let Some(t) = tray_h.borrow().as_ref() {
+                let l = current();
+                let (ct, gt) = temps.get();
+                let hot = ct.max(gt);
+                t.update(
+                    tray_icon(l.pl1 / 65.0, hot),
+                    format!("Power Limiter · {}", applied_name(&l)),
+                    format!("CPU {:.0}/{:.0} W · GPU {:.0} W · {:.0}° / {:.0}°", l.pl1, l.pl2, l.gpu, ct, gt),
+                );
+            }
+        })
+    };
+
+    let settings = vbox(24);
+    let settings_head = vbox(4);
+    settings_head.append(&label("PREFERENCES", &["eyebrow"]));
+    settings_head.append(&wrapped("Settings", &["hero"]));
+    settings.append(&settings_head);
+
+    // appearance: theme swatches and font samples
+    let theme_row = vbox(10);
+    theme_row.append(&label("Theme", &[]));
+    let themes = gtk::FlowBox::new();
+    themes.set_selection_mode(gtk::SelectionMode::None);
+    themes.set_max_children_per_line(3);
+    themes.set_column_spacing(12);
+    themes.set_row_spacing(12);
+    themes.set_homogeneous(true);
+    let mut first_theme: Option<gtk::ToggleButton> = None;
+    for (id, name) in [("auto", "Match system"), ("sepia", "Sepia"), ("dark", "Monokai Pro")] {
+        let b = gtk::ToggleButton::new();
+        b.add_css_class("choice");
+        let v = vbox(8);
+        let sw = gtk::DrawingArea::new();
+        sw.set_content_width(120);
+        sw.set_content_height(64);
+        sw.set_draw_func(move |_, cr, w, h| {
+            let (w, h) = (w as f64, h as f64);
+            if id == "auto" {
+                swatch(cr, w, h, &SEPIA);
+                cr.rectangle(w / 2.0, 0.0, w / 2.0, h);
+                cr.clip();
+                swatch(cr, w, h, &DARK);
+            } else {
+                swatch(cr, w, h, if id == "dark" { &DARK } else { &SEPIA });
+            }
+        });
+        v.append(&sw);
+        v.append(&label(name, &["choice-name"]));
+        b.set_child(Some(&v));
+        if let Some(f) = &first_theme {
+            b.set_group(Some(f));
+        } else {
+            first_theme = Some(b.clone());
+        }
+        b.set_active(cfg.borrow().theme == id);
+        let (cfg, rs) = (cfg.clone(), restyle.clone());
+        b.connect_toggled(move |b| {
+            if b.is_active() {
+                cfg.borrow_mut().theme = id.to_string();
+                rs();
+            }
+        });
+        themes.insert(&b, -1);
+    }
+    theme_row.append(&themes);
+
+    let font_row = vbox(10);
+    font_row.append(&label("Typeface", &[]));
+    let fonts = gtk::FlowBox::new();
+    fonts.set_selection_mode(gtk::SelectionMode::None);
+    fonts.set_max_children_per_line(3);
+    fonts.set_column_spacing(12);
+    fonts.set_row_spacing(12);
+    fonts.set_homogeneous(true);
+    let mut first_font: Option<gtk::ToggleButton> = None;
+    for f in families.iter() {
+        let b = gtk::ToggleButton::new();
+        b.add_css_class("choice");
+        let v = vbox(6);
+        let sample_lbl = label("45 W · 4.2 GHz", &["choice-sample"]);
+        let al = pango::AttrList::new();
+        let mut fd = pango::FontDescription::new();
+        fd.set_family(f);
+        fd.set_size(15 * pango::SCALE);
+        al.insert(pango::AttrFontDesc::new(&fd));
+        sample_lbl.set_attributes(Some(&al));
+        v.append(&sample_lbl);
+        v.append(&label(f, &["choice-name"]));
+        b.set_child(Some(&v));
+        if let Some(first) = &first_font {
+            b.set_group(Some(first));
+        } else {
+            first_font = Some(b.clone());
+        }
+        b.set_active(cfg.borrow().font == *f);
+        let (cfg, rs, name) = (cfg.clone(), restyle.clone(), f.clone());
+        b.connect_toggled(move |b| {
+            if b.is_active() {
+                cfg.borrow_mut().font = name.clone();
+                rs();
+            }
+        });
+        fonts.insert(&b, -1);
+    }
+    font_row.append(&fonts);
+    if !families.iter().any(|f| f == "IBM Plex Mono") {
+        font_row.append(&wrapped("More typefaces: sudo apt install fonts-ibm-plex fonts-jetbrains-mono", &["mut", "sans"]));
+    }
+    settings.append(&group("APPEARANCE", &[&theme_row, &font_row]));
+
+    // menu bar and login
+    let tray_sw = gtk::Switch::new();
+    tray_sw.set_active(cfg.borrow().tray);
+    let close_sw = gtk::Switch::new();
+    close_sw.set_active(cfg.borrow().close_to_tray);
+    close_sw.set_sensitive(cfg.borrow().tray);
+    let login_sw = gtk::Switch::new();
+    login_sw.set_active(autostart_path().exists());
+    let startup_dd = gtk::DropDown::from_strings(&["Leave as is", "Last applied limits", "Quiet", "Balanced", "Performance"]);
+    const STARTUP_IDS: [&str; 5] = ["none", "last", "QUIET", "BALANCED", "PERFORM"];
+    startup_dd.set_selected(STARTUP_IDS.iter().position(|i| *i == cfg.borrow().startup).unwrap_or(0) as u32);
+    let watch_sw = gtk::Switch::new();
+    watch_sw.set_active(cfg.borrow().login_watch);
+    {
+        let (cfg1, start_tray, tray_h, close_sw1, tray_tick, show_toast) = (cfg.clone(), start_tray.clone(), tray_h.clone(), close_sw.clone(), tray_tick.clone(), show_toast.clone());
+        tray_sw.connect_active_notify(move |sw| {
+            if sw.is_active() {
+                if start_tray() {
+                    tray_tick();
+                } else {
+                    show_toast("No menu-bar host found. Enable the AppIndicator extension.");
+                    sw.set_active(false);
+                    return;
+                }
+            } else if let Some(t) = tray_h.borrow_mut().take() {
+                t.shutdown();
+            }
+            cfg1.borrow_mut().tray = sw.is_active();
+            close_sw1.set_sensitive(sw.is_active());
+            save_cfg(&cfg1.borrow());
+        });
+        let cfg2 = cfg.clone();
+        close_sw.connect_active_notify(move |sw| {
+            cfg2.borrow_mut().close_to_tray = sw.is_active();
+            save_cfg(&cfg2.borrow());
+        });
+        login_sw.connect_active_notify(|sw| set_autostart(sw.is_active()));
+        let cfg3 = cfg.clone();
+        startup_dd.connect_selected_notify(move |d| {
+            cfg3.borrow_mut().startup = STARTUP_IDS[(d.selected() as usize).min(4)].to_string();
+            save_cfg(&cfg3.borrow());
+        });
+        let cfg4 = cfg.clone();
+        watch_sw.connect_active_notify(move |sw| {
+            cfg4.borrow_mut().login_watch = sw.is_active();
+            save_cfg(&cfg4.borrow());
+        });
+    }
+    settings.append(&group("MENU BAR AND LOGIN", &[
+        &setting_row("Show in the menu bar", "A live ring shows your CPU budget and temperature. Click it to open the app.", &tray_sw),
+        &setting_row("Keep running when the window is closed", "Closing the window hides it; the indicator stays.", &close_sw),
+        &setting_row("Start at login", "Starts quietly in the menu bar.", &login_sw),
+        &setting_row("Apply limits at login", "Asks for your password once per login, because limits need administrator rights.", &startup_dd),
+        &setting_row("Switch profiles automatically at login", "Watches for tuned games and adjusts CPU and GPU as they start and stop.", &watch_sw),
+    ]));
+
+    // data
+    let path_entry = gtk::Entry::new();
+    path_entry.set_hexpand(true);
+    path_entry.set_text(&std::env::var("POWERLIMIT_PROFILES").unwrap_or_else(|_| "/etc/powerlimit/profiles.conf".into()));
+    let choose = key("CHOOSE");
+    let default_btn = key("DEFAULT");
+    let set_path: Rc<dyn Fn(&str)> = {
+        let (cfg, entry, limits_tick, show_toast) = (cfg.clone(), path_entry.clone(), limits_tick.clone(), show_toast.clone());
+        Rc::new(move |p: &str| {
+            let p = p.trim();
+            if p.is_empty() || p == "/etc/powerlimit/profiles.conf" {
+                std::env::remove_var("POWERLIMIT_PROFILES");
+                cfg.borrow_mut().profiles = String::new();
+                entry.set_text("/etc/powerlimit/profiles.conf");
+            } else {
+                std::env::set_var("POWERLIMIT_PROFILES", p);
+                cfg.borrow_mut().profiles = p.to_string();
+                entry.set_text(p);
+            }
+            save_cfg(&cfg.borrow());
+            limits_tick();
+            show_toast("Profiles file updated");
+        })
+    };
+    {
+        let sp = set_path.clone();
+        path_entry.connect_activate(move |e| sp(&e.text()));
+        let sp = set_path.clone();
+        default_btn.connect_clicked(move |_| sp(""));
+        let (sp, win) = (set_path.clone(), win.clone());
+        choose.connect_clicked(move |_| {
+            let dialog = gtk::FileDialog::new();
+            dialog.set_title("Profiles file");
+            let sp = sp.clone();
+            dialog.save(Some(&win), gtk::gio::Cancellable::NONE, move |res| {
+                if let Some(path) = res.ok().and_then(|f| f.path()) {
+                    sp(&path.to_string_lossy());
+                }
+            });
+        });
+    }
+    let path_row = vbox(8);
+    path_row.append(&wrapped("Profiles file", &[]));
+    path_row.append(&wrapped("Where tuned game profiles are kept. Tuning writes here with administrator rights.", &["mut", "sans"]));
+    let path_line = hbox(8);
+    path_line.append(&path_entry);
+    path_line.append(&choose);
+    path_line.append(&default_btn);
+    path_row.append(&path_line);
+
+    let tune_defaults: Vec<gtk::SpinButton> = vec![
+        spin(6.0, 240.0, cfg.borrow().minutes),
+        spin(60.0, 100.0, cfg.borrow().cpu_max),
+        spin(60.0, 95.0, cfg.borrow().gpu_max),
+    ];
+    for (i, (sp, target)) in tune_defaults.iter().zip([minutes.clone(), cmax.clone(), gmax.clone()]).enumerate() {
+        let cfg = cfg.clone();
+        sp.connect_value_changed(move |s| {
+            target.set_value(s.value());
+            let mut c = cfg.borrow_mut();
+            match i {
+                0 => c.minutes = s.value(),
+                1 => c.cpu_max = s.value(),
+                _ => c.gpu_max = s.value(),
+            }
+            save_cfg(&c);
+        });
+    }
+    settings.append(&group("DATA AND TUNING", &[
+        &path_row,
+        &setting_row("Tuning duration", "Minutes. Longer gives steadier readings.", &tune_defaults[0]),
+        &setting_row("CPU temperature limit", "°C. Tuning never goes hotter than this.", &tune_defaults[1]),
+        &setting_row("GPU temperature limit", "°C", &tune_defaults[2]),
+    ]));
+
+    // maintenance
+    let reset_btn = key("RESET");
+    reset_btn.add_css_class("danger");
+    {
+        let tx = tx.clone();
+        reset_btn.connect_clicked(move |_| privileged(vec!["reset".into()], tx.clone()));
+    }
+    let about = wrapped(&format!("Power Limiter {} · MIT licence · github.com/ogden-marrow/powerlimit", env!("CARGO_PKG_VERSION")), &["mut", "sans"]);
+    settings.append(&group("MAINTENANCE", &[
+        &setting_row("Dell defaults", "Restore 45 W sustained, 109 W burst, 40 W GPU, and forget saved reboot settings.", &reset_btn),
+        &{
+            let b = hbox(0);
+            b.append(&about);
+            b
+        },
+    ]));
+    stack.add_named(&page(&settings), Some("settings"));
+
+    // window close hides to the menu bar; tray clicks and menu items arrive here
+    {
+        let (cfg, tray_h) = (cfg.clone(), tray_h.clone());
+        win.connect_close_request(move |w| {
+            if cfg.borrow().close_to_tray && tray_h.borrow().is_some() {
+                w.set_visible(false);
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+        let (win, app2, tx) = (win.clone(), app.clone(), tx.clone());
+        glib::timeout_add_local(Duration::from_millis(250), move || {
+            while let Ok(c) = tray_rx.try_recv() {
+                match c {
+                    crate::tray::Cmd::Open => {
+                        win.set_visible(true);
+                        win.present();
+                    }
+                    crate::tray::Cmd::Preset(i) => {
+                        let (_, a, b, g) = PRESETS[i];
+                        privileged(vec!["set".into(), a.to_string(), b.to_string(), g.to_string()], tx.clone());
+                    }
+                    crate::tray::Cmd::Reset => privileged(vec!["reset".into()], tx.clone()),
+                    crate::tray::Cmd::Quit => app2.quit(),
+                }
+            }
+            glib::ControlFlow::Continue
+        });
+        let w2 = watcher.clone();
+        app.connect_shutdown(move |_| {
+            if let Some(mut s) = w2.borrow_mut().take() {
+                let _ = s.write_all(b"stop\n");
+                let _ = s.flush();
+            }
+        });
+        let tt = tray_tick.clone();
+        glib::timeout_add_seconds_local(2, move || {
+            tt();
+            glib::ControlFlow::Continue
+        });
+    }
+    if cfg.borrow().tray && start_tray() {
+        tray_tick();
+    }
+
     // ======================= messages from worker threads
     {
         let (log, bar, prog, stdin, tune_stack) = (log.clone(), bar.clone(), prog.clone(), stdin.clone(), tune_stack.clone());
         let (phase, trial, detail, result, stop) = (phase.clone(), trial.clone(), detail.clone(), result.clone(), stop.clone());
+        let cfg_m = cfg.clone();
         let (auto_off, auto_status, watcher, show_toast, limits_tick) = (auto_off.clone(), auto_status.clone(), watcher.clone(), show_toast.clone(), limits_tick.clone());
         let (trials, render, pending, sync, guard, preset_btns, custom_btn) = (trials.clone(), render_trials.clone(), pending.clone(), sync_steppers.clone(), guard.clone(), preset_btns.clone(), custom_btn.clone());
         glib::timeout_add_local(Duration::from_millis(300), move || {
@@ -1304,6 +1676,11 @@ fn build(app: &gtk::Application) {
                         // show what is really applied, right away
                         limits_tick();
                         let l = current();
+                        if l.gpu > 0.0 {
+                            let mut c = cfg_m.borrow_mut();
+                            c.last = format!("{},{},{}", l.pl1, l.pl2, l.gpu);
+                            save_cfg(&c);
+                        }
                         show_toast(&format!("Applied · CPU {:.0}/{:.0} W · GPU {:.0} W", l.pl1, l.pl2, l.gpu));
                         *pending.borrow_mut() = (l.pl1.clamp(15.0, 65.0), l.pl2.clamp(15.0, 109.0), if l.gpu >= 10.0 { l.gpu } else { pending.borrow().2 });
                         sync();
@@ -1319,7 +1696,25 @@ fn build(app: &gtk::Application) {
         });
     }
     tab_btns[0].set_active(true);
-    win.present();
+    if background {
+        let c = cfg.borrow().clone();
+        let args: Option<Vec<f64>> = match c.startup.as_str() {
+            "none" => None,
+            "last" => Some(c.last.split(',').filter_map(|v| v.parse().ok()).collect()).filter(|v: &Vec<f64>| v.len() == 3),
+            id => PRESETS.iter().find(|p| p.0 == id).map(|p| vec![p.1, p.2, p.3]),
+        };
+        if let Some(a) = args {
+            let mut v = vec!["set".to_string()];
+            v.extend(a.iter().map(|x| x.to_string()));
+            privileged(v, tx.clone());
+        }
+        if c.login_watch {
+            auto_on.set_active(true);
+        }
+    }
+    if !(background && tray_h.borrow().is_some()) {
+        win.present();
+    }
 
     // ======================= test harness (developer aid)
     // POWERLIMIT_SHOT=dir [POWERLIMIT_SHOT_SIZES=1100x760,700x600] [POWERLIMIT_SHOT_THEMES=dark,sepia] saves a PNG per
@@ -1344,14 +1739,14 @@ fn build(app: &gtk::Application) {
                 // two settle steps give the compositor time to apply the new size before any capture
                 steps.push((t.clone(), *w, *h, "set"));
                 steps.push((t.clone(), *w, *h, "wait"));
-                for p in ["overview", "tune", "profiles"] {
+                for p in ["overview", "tune", "profiles", "settings"] {
                     steps.push((t.clone(), *w, *h, p));
                 }
             }
         }
         let steps = Rc::new(steps);
         let i = Rc::new(Cell::new(0usize));
-        let (win2, tabs2, tk, rs) = (win.clone(), tab_btns.clone(), theme_key.clone(), restyle.clone());
+        let (win2, tabs2, tk, rs) = (win.clone(), tab_btns.clone(), cfg.clone(), restyle.clone());
         glib::timeout_add_local(Duration::from_millis(2500), move || {
             let n = i.get();
             let Some((t, w, h, p)) = steps.get(n).cloned() else {
@@ -1361,7 +1756,7 @@ fn build(app: &gtk::Application) {
             i.set(n + 1);
             match p {
                 "set" => {
-                    *tk.borrow_mut() = t.clone();
+                    tk.borrow_mut().theme = t.clone();
                     rs();
                     win2.set_default_size(w, h);
                     return glib::ControlFlow::Continue;
@@ -1373,7 +1768,7 @@ fn build(app: &gtk::Application) {
                 }
                 _ => {}
             }
-            if let Some(b) = tabs2.get(["overview", "tune", "profiles"].iter().position(|x| *x == p).unwrap_or(0)) {
+            if let Some(b) = tabs2.get(["overview", "tune", "profiles", "settings"].iter().position(|x| *x == p).unwrap_or(0)) {
                 b.set_active(true);
             }
             let (win3, dir) = (win2.clone(), dir.clone());
@@ -1384,13 +1779,95 @@ fn build(app: &gtk::Application) {
                 let paintable = gtk::WidgetPaintable::new(Some(&win3));
                 let snap = gtk::Snapshot::new();
                 paintable.snapshot(&snap, aw as f64, ah as f64);
-                if let (Some(node), Some(native)) = (snap.to_node(), win3.native()) {
-                    if let Some(r) = native.renderer() {
-                        let _ = r.render_texture(node, None).save_to_png(format!("{dir}/{t}_{w}x{h}_{p}.png"));
+                match (snap.to_node(), win3.native()) {
+                    (Some(node), Some(native)) => {
+                        if let Some(r) = native.renderer() {
+                            if let Err(e) = r.render_texture(node, None).save_to_png(format!("{dir}/{t}_{w}x{h}_{p}.png")) {
+                                eprintln!("  save failed: {e}");
+                            }
+                        }
                     }
+                    (n, nat) => eprintln!("  no capture (node {}, native {})", n.is_some(), nat.is_some()),
                 }
             });
             glib::ControlFlow::Continue
         });
     }
+}
+
+// ---------------------------------------------------------------- settings helpers
+
+/// A titled card of settings rows separated by hairlines.
+fn group(title: &str, rows: &[&gtk::Box]) -> gtk::Box {
+    let p = panel();
+    p.append(&label(title, &["eyebrow"]));
+    for r in rows {
+        let sep = rule();
+        sep.add_css_class("hair");
+        sep.set_margin_top(14);
+        sep.set_margin_bottom(14);
+        p.append(&sep);
+        p.append(*r);
+    }
+    p
+}
+
+fn title_case(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|f| f.to_uppercase().collect::<String>() + &c.as_str().to_lowercase()).unwrap_or_default()
+}
+
+/// Miniature window used as the theme picker thumbnail.
+fn swatch(cr: &cairo::Context, w: f64, h: f64, p: &Palette) {
+    rrect(cr, 0.0, 0.0, w, h, 10.0);
+    hex(cr, p.bg, 1.0);
+    let _ = cr.fill();
+    rrect(cr, 10.0, 12.0, w - 20.0, h - 24.0, 7.0);
+    hex(cr, p.panel, 1.0);
+    let _ = cr.fill_preserve();
+    hex(cr, p.line, 0.6);
+    cr.set_line_width(1.0);
+    let _ = cr.stroke();
+    rrect(cr, 18.0, 20.0, 34.0, 6.0, 3.0);
+    hex(cr, p.accent, 1.0);
+    let _ = cr.fill();
+    rrect(cr, 18.0, 32.0, w - 40.0, 4.0, 2.0);
+    hex(cr, p.mut_, 0.8);
+    let _ = cr.fill();
+    rrect(cr, 18.0, 41.0, (w - 40.0) * 0.6, 4.0, 2.0);
+    hex(cr, p.blue, 0.9);
+    let _ = cr.fill();
+}
+
+/// Menu-bar glyph: a ring filled to the CPU budget, coloured by the hotter chip.
+fn tray_icon(frac: f64, hot: f64) -> Vec<ksni::Icon> {
+    const N: i32 = 32;
+    let Ok(mut s) = cairo::ImageSurface::create(cairo::Format::ARgb32, N, N) else { return vec![] };
+    {
+        let Ok(cr) = cairo::Context::new(&s) else { return vec![] };
+        let c = N as f64 / 2.0;
+        cr.set_line_width(5.0);
+        cr.set_line_cap(cairo::LineCap::Round);
+        cr.set_source_rgba(1.0, 1.0, 1.0, 0.30);
+        cr.arc(c, c, 12.0, 0.0, 2.0 * PI);
+        let _ = cr.stroke();
+        let col = if hot >= 88.0 { "#FF6188" } else if hot >= 78.0 { "#FFD866" } else { "#A9DC76" };
+        hex(&cr, col, 1.0);
+        cr.arc(c, c, 12.0, -PI / 2.0, -PI / 2.0 + 2.0 * PI * frac.clamp(0.05, 1.0));
+        let _ = cr.stroke();
+        cr.set_source_rgba(1.0, 1.0, 1.0, 0.95);
+        cr.arc(c, c, 3.0, 0.0, 2.0 * PI);
+        let _ = cr.fill();
+    }
+    s.flush();
+    let stride = s.stride() as usize;
+    let Ok(d) = s.data() else { return vec![] };
+    let mut out = Vec::with_capacity((N * N * 4) as usize);
+    for y in 0..N as usize {
+        for x in 0..N as usize {
+            let o = y * stride + x * 4;
+            out.extend_from_slice(&[d[o + 3], d[o + 2], d[o + 1], d[o]]);
+        }
+    }
+    vec![ksni::Icon { width: N, height: N, data: out }]
 }

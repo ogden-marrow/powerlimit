@@ -1,30 +1,40 @@
 /* Template: @@name@@ tokens are filled in by gui.rs from the active palette and font. */
 window.pl-window, .pl-root { background: @@bg@@; color: @@ink@@; font-family: @@font@@; }
+window.pl-window.csd { border-radius: 14px; box-shadow: 0 0 0 1px @@line@@, 0 1px 2px rgba(0,0,0,0.28), 0 8px 16px -8px rgba(0,0,0,0.42); margin: 10px; }
+window.pl-window.csd.maximized, window.pl-window.csd.fullscreen, window.pl-window.csd.tiled { border-radius: 0; box-shadow: none; margin: 0; }
+window.pl-window decoration { border-radius: 14px; }
+.pl-root { border-radius: 0 0 14px 14px; }
+window.pl-window.maximized .pl-root, window.pl-window.fullscreen .pl-root, window.pl-window.tiled .pl-root { border-radius: 0; }
 .pl-root label { color: @@ink@@; }
 label.mut, .mut { color: @@mut@@; }
 label.blue { color: @@blue@@; }
 label.good { color: @@ok@@; } label.bad { color: @@bad@@; } label.accent { color: @@accent@@; }
 
-headerbar.pl-header { background: @@bg@@; color: @@ink@@; box-shadow: none; border-bottom: 1.5px solid @@line@@; min-height: 46px; padding: 0 10px; }
-headerbar.pl-header windowcontrols button { color: @@ink@@; background: transparent; }
+headerbar.pl-header { background: @@bg@@; color: @@ink@@; box-shadow: none; border: none; border-bottom: 1.5px solid @@line@@; border-radius: 14px 14px 0 0; min-height: 48px; padding: 0 16px; }
+window.pl-window.maximized headerbar.pl-header, window.pl-window.fullscreen headerbar.pl-header, window.pl-window.tiled headerbar.pl-header { border-radius: 0; }
+headerbar.pl-header windowcontrols { margin: 0 0 0 8px; }
+headerbar.pl-header windowcontrols button { min-width: 24px; min-height: 24px; padding: 0; margin: 12px 3px; border-radius: 999px; border: 1.5px solid @@line@@; background: transparent; box-shadow: none; color: @@mut@@; -gtk-icon-size: 10px; }
+headerbar.pl-header windowcontrols button:hover { background: @@track@@; color: @@ink@@; }
+headerbar.pl-header windowcontrols button.close:hover { background: @@bad@@; border-color: @@bad@@; color: @@bg@@; }
+headerbar.pl-header windowcontrols button image { color: inherit; }
 headerbar.pl-header button { color: @@ink@@; }
 .stripes { background-image: repeating-linear-gradient(to bottom, @@line@@ 0px, @@line@@ 1.5px, transparent 1.5px, transparent 5px); min-height: 16px; }
 .title { font-size: 13px; font-weight: 600; letter-spacing: 2px; }
 
-button.key, togglebutton.key { background: @@panel@@; color: @@ink@@; border: 1.5px solid @@line@@; border-radius: 11px; box-shadow: 0 3px 0 @@line@@; padding: 8px 16px; font-weight: 600; font-size: 12px; letter-spacing: 0.8px; min-height: 0; margin-bottom: 3px; }
+button.key, togglebutton.key { background: @@panel@@; color: @@ink@@; border: 1.5px solid @@line@@; border-radius: 10px; box-shadow: 0 2px 0 @@line@@; padding: 0 16px; font-weight: 600; font-size: 12px; letter-spacing: 0.8px; min-height: 34px; margin-bottom: 2px; }
 button.key:hover, togglebutton.key:hover { background: @@track@@; }
-button.key:active { box-shadow: 0 0 0 @@line@@; margin-top: 3px; margin-bottom: 0; }
-button.key:checked, togglebutton.key:checked, button.key.on { background: @@accent@@; color: @@accentInk@@; border-color: @@accent@@; box-shadow: 0 3px 0 @@accentLo@@; }
+button.key:active, togglebutton.key:active { box-shadow: 0 0 0 @@line@@; margin-top: 2px; margin-bottom: 0; }
+button.key:checked, togglebutton.key:checked, button.key.on { background: @@accent@@; color: @@accentInk@@; border-color: @@accent@@; box-shadow: 0 2px 0 @@accentLo@@; }
 button.key:checked label, togglebutton.key:checked label, button.key.on label { color: @@accentInk@@; }
-button.key.danger { color: @@bad@@; border-color: @@bad@@; box-shadow: 0 3px 0 @@bad@@; background: transparent; }
+button.key.danger { color: @@bad@@; border-color: @@bad@@; box-shadow: 0 2px 0 @@bad@@; background: transparent; }
 button.key.danger label { color: @@bad@@; }
 button.key:disabled { opacity: 0.45; }
 button.quiet { background: transparent; border: none; box-shadow: none; color: @@mut@@; padding: 6px 8px; border-radius: 8px; }
 button.quiet:hover { background: @@track@@; color: @@ink@@; }
 
-.panel { background: @@panel@@; border: 1.5px solid @@line@@; border-radius: 18px; padding: 18px 20px; }
-.row-card { background: @@panel@@; border: 1.5px solid @@line@@; border-radius: 16px; padding: 12px 18px; box-shadow: 0 3px 0 @@line@@; margin-bottom: 3px; }
-.row-card.active { border-color: @@accent@@; box-shadow: 0 3px 0 @@accentLo@@; }
+.panel { background: @@panel@@; border: 1.5px solid @@line@@; border-radius: 16px; padding: 24px; }
+.row-card { background: @@panel@@; border: 1.5px solid @@line@@; border-radius: 14px; padding: 16px 20px; box-shadow: 0 2px 0 @@line@@; margin-bottom: 2px; }
+.row-card.active { border-color: @@accent@@; box-shadow: 0 2px 0 @@accentLo@@; }
 .eyebrow { font-size: 11px; letter-spacing: 1.6px; color: @@mut@@; }
 .heavy-rule { background: @@line@@; min-height: 1.5px; }
 .leader { border-bottom: 2px dotted @@rule@@; min-height: 1px; margin-bottom: 5px; }
@@ -36,7 +46,7 @@ button.quiet:hover { background: @@track@@; color: @@ink@@; }
 .cursor { background: @@accent@@; min-width: 12px; min-height: 22px; }
 .cursor-sm { background: @@accent@@; min-width: 8px; min-height: 14px; }
 .sans { font-family: "IBM Plex Sans", "Cantarell", system-ui, sans-serif; }
-.status-bar { border-top: 1.5px solid @@line@@; padding: 0 22px; min-height: 34px; font-size: 12px; color: @@mut@@; }
+.status-bar { border-top: 1.5px solid @@line@@; border-radius: 0 0 14px 14px; padding: 0 24px; min-height: 36px; font-size: 12px; color: @@mut@@; }
 .status-bar label { color: @@mut@@; }
 .dot { min-width: 9px; min-height: 9px; border-radius: 50%; background: @@ok@@; }
 .dot.busy { background: @@accent@@; }
@@ -63,3 +73,17 @@ scrollbar trough { background: transparent; }
 label.toast { background: @@ink@@; color: @@bg@@; border-radius: 999px; padding: 10px 20px; font-weight: 600; }
 tooltip, tooltip label { color: @@ink@@; }
 tooltip { background: @@panel@@; border: 1.5px solid @@line@@; }
+
+.hair { background: @@rule@@; min-height: 1px; opacity: 0.6; }
+button.choice { background: @@panel@@; color: @@ink@@; border: 1.5px solid @@line@@; border-radius: 12px; box-shadow: none; padding: 12px; min-height: 0; }
+button.choice:hover { background: @@track@@; }
+button.choice:checked { background: @@panel@@; border-color: @@accent@@; box-shadow: 0 0 0 2px @@accent@@; }
+button.choice label { color: @@ink@@; }
+label.choice-name { font-size: 11px; letter-spacing: 0.6px; color: @@mut@@; }
+button.choice:checked label.choice-name { color: @@ink@@; }
+entry { min-height: 34px; padding: 0 12px; }
+entry:focus-within, spinbutton:focus-within { border-color: @@accent@@; }
+spinbutton { min-height: 34px; }
+dropdown > button { min-height: 34px; padding: 0 12px; }
+switch { min-width: 44px; min-height: 26px; }
+switch slider { margin: 2px; }

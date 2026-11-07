@@ -24,12 +24,20 @@ Other Intel laptops with RAPL may work, but this is only tested on the XPS 15 95
 
 A "console" interface: striped title bar, keycap buttons, dot-leader tables, ring dials. Pick **Sepia** or **Dark (Monokai Pro style)**, or follow the system, and choose a monospace font from the appearance menu in the header bar (IBM Plex Mono is the default; install `fonts-ibm-plex` for it). The window resizes from 480 px wide up, switching between side-by-side and stacked layouts.
 
+## Menu bar and settings
+
+The Settings tab holds appearance (theme thumbnails, typeface samples), the menu-bar indicator, start at login, the
+limits to apply at login, automatic profile switching, the profiles file location, and tuning defaults.
+The indicator is a ring showing the CPU budget, coloured by the hotter chip; its menu applies presets. Ubuntu shows it
+through the built-in AppIndicator extension. Closing the window can hide it to the menu bar instead of quitting.
+Limits applied at login ask for your password once, since they need administrator rights.
+
 ## Install
 
 **Easiest (Ubuntu/Debian):** download the `.deb` from the [latest release](https://github.com/ogden-marrow/powerlimit/releases/latest), then double-click it (Software / App Center) or run:
 
 ```bash
-sudo apt install ./powerlimit_0.2.0_amd64.deb
+sudo apt install ./powerlimit_0.3.0_amd64.deb
 ```
 
 Open **Power Limiter** from the app menu. Remove it with `sudo apt remove powerlimit`.
